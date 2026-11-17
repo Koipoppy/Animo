@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Release: HTTPS only; additionally trust the private CA that signs the bare-IP server cert. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="@raw/animo_ca" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

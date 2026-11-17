@@ -1,0 +1,44 @@
+# Run from Backend/:
+#   cp .env.example .env   # fill LUX3D_API_KEY
+#   docker compose up -d --build
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: Backend/Dockerfile
+    env_file:
+      - .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8787
+      DATA_DIR: /app/Backend/data
+    volumes:
+      - animo_data:/app/Backend/data
+    ports:
+      # Caddy terminates HTTPS and forwards to this loopback port.
+      # For temporary IP-only testing set API_BIND=0.0.0.0 (debug builds, HTTP).
+      - "${API_BIND:-127.0.0.1}:8787:8787"
+    restart: unless-stopped
+
+  # Optional: bare-IP HTTPS with the self-signed cert from deploy/make-ip-cert.sh.
+  # Start with: HTTPS_PORT=8443 docker compose --profile ip-https up -d --build
+  caddy:
+    image: caddy:2
+    profiles: ["ip-https"]
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "${HTTPS_PORT:-8443}:${HTTPS_PORT:-8443}"
+    volumes:
+      - ./Caddyfile.ip:/etc/caddy/Caddyfile:ro
+      - ./certs:/certs:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  # Stable name so backup commands do not depend on the compose project name.
+  animo_data:
+    name: animo_data
+  caddy_data:
+  caddy_config:

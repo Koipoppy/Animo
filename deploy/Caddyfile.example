@@ -1,0 +1,7 @@
+# Copy to /etc/caddy/Caddyfile on the server and replace the domain.
+# Caddy obtains and renews the Let's Encrypt certificate automatically.
+# The origin must be reachable on ports 80 and 443.
+api.example.com {
+	encode gzip
+	reverse_proxy 127.0.0.1:8787
+}

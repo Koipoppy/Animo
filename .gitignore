@@ -1,0 +1,48 @@
+# Build artifacts and IDE files
+*.apk
+*.aab
+.vs/
+.idea/
+
+# Backend
+Backend/node_modules/
+Backend/.env
+Backend/data/
+
+# Local tooling
+_installers/
+.zcode/
+
+# Local HTTPS certs and generated Caddy config
+Backend/certs/
+Backend/Caddyfile.ip
+
+Backend/data-smoke/
+
+build.log
+NUL
+
+# Android native client
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/keystore.properties
+*.jks
+*.keystore
+android/.idea/
+*.iml
+
+# Debug screenshots produced while testing on device
+native-*.png
+phone-*.png
+ui-*.png
+crop-*.png
+emulator-*.png
+verify-*.png
+/*.png
+ui.xml
+
+# Python scratch
+__pycache__/
+*.pyc

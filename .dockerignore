@@ -1,0 +1,15 @@
+.git
+.gitignore
+android
+Assets
+Packages
+ProjectSettings
+Backend/node_modules
+Backend/data
+Backend/.env
+Backend/test
+Aholo*.md
+docs
+deploy
+*.apk
+*.aab
