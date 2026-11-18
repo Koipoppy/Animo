@@ -38,6 +38,7 @@ data class RetargetAction(
 class Lux3dClient(
     private val apiKey: String,
     private val baseUrl: String = "https://api.aholo3d.cn",
+    private val faceCount: Int = 300_000,
 ) {
     init {
         if (apiKey.isBlank()) throw Lux3dException("请先在设置中填写 Lux3D API Key")
@@ -184,7 +185,7 @@ class Lux3dClient(
 
     private fun baseTaskBody(): JSONObject = JSONObject()
         .put("version", VERSION)
-        .put("faceCount", FACE_COUNT)
+        .put("faceCount", faceCount.coerceIn(10_000, 300_000))
         .put("outputFormat", JSONArray().put("glb"))
         .put("enablePbr", true)
 
@@ -318,7 +319,7 @@ class Lux3dClient(
     }
 
     companion object {
-        const val VERSION = "G1-Turbo"
+        const val VERSION = "G1"
         const val FACE_COUNT = 30_000
         internal val SUCCESS_STATUS = setOf("success", "succeeded", "completed", "done")
         private const val MAX_MODEL_BYTES = 100L * 1024 * 1024

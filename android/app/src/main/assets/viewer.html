@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>Animo · 手办预览</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: radial-gradient(120% 88% at 50% 16%, #2B1421 0%, #150A11 56%, #0A0509 100%);
+      -webkit-tap-highlight-color: transparent;
+    }
+    model-viewer {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      min-height: 100vh;
+      background: transparent;
+      --poster-color: transparent;
+      --progress-bar-color: transparent;
+      --progress-mask: transparent;
+    }
+    #hint {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 8px;
+      text-align: center;
+      font: 10px/1.4 -apple-system, "PingFang SC", "Noto Sans SC", sans-serif;
+      letter-spacing: .08em;
+      color: rgba(252, 241, 244, .38);
+      pointer-events: none;
+      transition: opacity .5s ease;
+    }
+  </style>
+  <script type="module" src="./model-viewer.min.js"></script>
+</head>
+<body>
+  <model-viewer
+    id="mv"
+    camera-controls
+    touch-action="none"
+    auto-rotate
+    auto-rotate-delay="700"
+    rotation-per-second="16deg"
+    autoplay
+    animation-crossfade-duration="0.3"
+    interaction-prompt="none"
+    environment-image="neutral"
+    shadow-intensity="0.7"
+    shadow-softness="0.9"
+    exposure="1.05"
+    tone-mapping="aces"
+    camera-orbit="24deg 78deg 108%"
+    min-camera-orbit="auto 15deg auto"
+    max-camera-orbit="auto 96deg auto"
+  ></model-viewer>
+  <div id="hint">拖动旋转 · 双指缩放</div>
+  <script>
+    (function () {
+      var params = new URLSearchParams(location.search);
+      var mv = document.getElementById('mv');
+      var hint = document.getElementById('hint');
+
+      mv.addEventListener('error', function (event) {
+        try {
+          var detail = event && event.detail ? (event.detail.type || event.detail) : 'load-error';
+          if (window.AnimoBridge && window.AnimoBridge.onModelError) {
+            window.AnimoBridge.onModelError(String(detail));
+          }
+        } catch (e) {}
+      });
+
+      // Called from Kotlin when the selected pet changes; the WebView/GL context is reused.
+      window.loadModel = function (src) {
+        if (!src) return;
+        mv.setAttribute('src', src);
+      };
+
+      var model = params.get('model');
+      if (model) mv.setAttribute('src', model);
+
+      if (params.get('rotate') === '0') mv.removeAttribute('auto-rotate');
+
+      // Some Android WebViews compute vh as 0 in a small card; pin to pixels.
+      function fit() {
+        var w = window.innerWidth || 1;
+        var h = window.innerHeight || 1;
+        mv.style.position = 'fixed';
+        mv.style.left = '0';
+        mv.style.top = '0';
+        mv.style.width = w + 'px';
+        mv.style.height = h + 'px';
+        document.documentElement.style.height = h + 'px';
+        document.body.style.height = h + 'px';
+      }
+      fit();
+      window.addEventListener('resize', fit);
+      setTimeout(fit, 300);
+      setTimeout(fit, 1200);
+
+      var hide = function () { hint.style.opacity = '0'; };
+      mv.addEventListener('load', function () {
+        try { if (window.AnimoBridge) AnimoBridge.onModelLoaded(); } catch (e) {}
+        setTimeout(hide, 1800);
+      });
+      setTimeout(hide, 6000);
+      mv.addEventListener('pointerdown', hide, { once: true });
+    })();
+  </script>
+</body>
+</html>

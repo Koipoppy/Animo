@@ -34,3 +34,12 @@ ui.xml
 # Python scratch
 __pycache__/
 *.pyc
+
+# Local production artifacts (submission package, report, promo video, model archive)
+deliverables/
+reference/
+report/
+video/
+blender/
+.tmp-*/
+.tmp-emulator.log

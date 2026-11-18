@@ -1,5 +1,6 @@
 package com.animo.ar.ui
 
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
@@ -77,7 +78,7 @@ class SquircleShape(
     override fun hashCode(): Int = 31 * radius.hashCode() + power.hashCode()
 }
 
-/** Pill shape: the corner radius always wins over half the short side. */
-fun capsule(power: Float = 2.4f): Shape = SquircleShape(radius = 2000.dp, power = power)
+/** True pill/stadium shape: semicircular ends, no superellipse flattening. */
+fun capsule(): Shape = RoundedCornerShape(percent = 50)
 
 fun squircle(radius: Dp): Shape = SquircleShape(radius = radius, power = 3f)

@@ -31,10 +31,18 @@ android {
         applicationId = "com.animo.ar"
         minSdk = 24
         targetSdk = 36
-        versionCode = 16
-        versionName = "0.5.0"
-        // Filament ships every ABI; phones are arm64 and the emulator is not used for AR.
-        ndk { abiFilters += listOf("arm64-v8a") }
+        versionCode = 79
+        versionName = "0.9.57"
+        // Phones are arm64. Pass -PincludeX86=true for a local x86_64 emulator build only;
+        // the release/phone APK keeps the small arm64-only payload.
+        val includeX86 = (project.findProperty("includeX86") as String?) == "true"
+        ndk {
+            abiFilters += if (includeX86) {
+                listOf("arm64-v8a", "x86_64")
+            } else {
+                listOf("arm64-v8a")
+            }
+        }
     }
 
     signingConfigs {
@@ -96,6 +104,15 @@ dependencies {
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
+    // In-app multi-frame scanner (same CameraX stack Shiwu uses).
+    implementation("androidx.camera:camera-core:1.4.1")
+    implementation("androidx.camera:camera-camera2:1.4.1")
+    implementation("androidx.camera:camera-lifecycle:1.4.1")
+    implementation("androidx.camera:camera-view:1.4.1")
+
+    // Local <model-viewer> preview for the collection (asset loader avoids file:// limits).
+    implementation("androidx.webkit:webkit:1.12.1")
 
     // ARCore + Filament wrapper (Sceneform successor). 3.6.2 is the newest line that does not
     // require compileSdk 37, which this machine's SDK does not have.

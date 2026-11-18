@@ -1,10 +1,16 @@
 package com.animo.ar.ui
 
-import android.content.res.Configuration
 import android.util.Log
+import android.view.MotionEvent
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,6 +21,7 @@ import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -22,10 +29,11 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -36,18 +44,22 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.PathData
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.min
@@ -62,7 +74,9 @@ import com.google.ar.core.Frame
 import com.google.ar.core.InstantPlacementPoint
 import com.google.ar.core.Plane
 import com.animo.ar.Palette
+import com.animo.ar.data.Lux3dPipeline
 import com.animo.ar.data.PetRecord
+import com.animo.ar.data.sanitizeGlb
 import io.github.sceneview.ar.ARSceneView
 import io.github.sceneview.ar.node.AnchorNode
 import io.github.sceneview.loaders.ModelLoader
@@ -95,9 +109,76 @@ private const val FALLBACK_GRACE_FRAMES = 45
 private const val PET_WALK_SPEED = 1.4f
 // Patrol turns continuously, so the walk path is a smooth circle instead of a wall bounce.
 private const val PET_TURN_RATE = 1.4f
-// Lux3D exports face +Z while the heading math assumes -Z; half a turn aligns them.
+// Lux3D exports face +Z while the heading math assumes -Z; the half-turn makes the model's
+// face, not its back, point toward the camera on placement.
 private const val MODEL_FORWARD_OFFSET = PI.toFloat()
 private const val REACTION_NANOS = 3_200_000_000L
+
+// Baseline camera-facing fill: on by default, this is the old "补光" look.
+private const val CAMERA_FILL_INTENSITY = 30_000f
+// Optional virtual flashlight: a spot light whose origin is the AR camera.
+private const val CAMERA_LIGHT_INTENSITY = 12_000f
+
+// Concentric-ring "Live Photo" mark, the familiar motion-photo glyph.
+private val RecordDot: ImageVector = ImageVector.Builder(
+    name = "LivePhoto",
+    defaultWidth = 24.dp,
+    defaultHeight = 24.dp,
+    viewportWidth = 24f,
+    viewportHeight = 24f,
+).apply {
+    addPath(
+        pathData = PathData {
+            moveTo(12f, 3.2f)
+            arcTo(8.8f, 8.8f, 0f, true, true, 12f, 20.8f)
+            arcTo(8.8f, 8.8f, 0f, true, true, 12f, 3.2f)
+            close()
+        },
+        stroke = SolidColor(Color.White),
+        strokeLineWidth = 1.5f,
+    )
+    addPath(
+        pathData = PathData {
+            moveTo(12f, 6.6f)
+            arcTo(5.4f, 5.4f, 0f, true, true, 12f, 17.4f)
+            arcTo(5.4f, 5.4f, 0f, true, true, 12f, 6.6f)
+            close()
+        },
+        stroke = SolidColor(Color.White),
+        strokeLineWidth = 1.5f,
+    )
+    addPath(
+        pathData = PathData {
+            moveTo(12f, 9.8f)
+            arcTo(2.2f, 2.2f, 0f, true, true, 12f, 14.2f)
+            arcTo(2.2f, 2.2f, 0f, true, true, 12f, 9.8f)
+            close()
+        },
+        fill = SolidColor(Color.White),
+    )
+}.build()
+
+// The only clips Lux3D retargets; the menu is filtered against this list.
+private val API_CLIP_LABELS = mapOf(
+    "Idle_Loop" to "待机",
+    "Walk_Loop" to "走路",
+    "Jog_Fwd_Loop" to "小跑",
+    "Dance_Loop" to "跳舞",
+    "Yes" to "点头",
+    "Jump_Start" to "跳跃",
+    "Sitting_Idle_Loop" to "坐下",
+    "Punch_Jab" to "出拳",
+    "Sword_Attack" to "挥剑",
+    "Hit_Chest" to "受击",
+    "Death01" to "倒地",
+)
+private val LOOPING_CLIPS = setOf(
+    "Idle_Loop",
+    "Walk_Loop",
+    "Jog_Fwd_Loop",
+    "Dance_Loop",
+    "Sitting_Idle_Loop",
+)
 
 // Battle tuning.
 private const val BATTLE_REACH = 0.09f
@@ -112,8 +193,18 @@ private const val BATTLE_DAMAGE = 20
 fun PlayScreen(
     pet: PetRecord,
     modelFile: File,
-    onBond: () -> Unit,
+    cameraLight: Boolean,
+    onToggleCameraLight: (Boolean) -> Unit,
     onExit: () -> Unit,
+    onGenerateClip: (String) -> Unit = {},
+    clipJob: String? = null,
+    clipStage: String = "",
+    clipProgress: Float = 0f,
+    clipError: String? = null,
+    onExportModel: () -> Unit = {},
+    onShareModel: (Boolean) -> Unit = {},
+    recording: Boolean = false,
+    onRecord: () -> Unit = {},
 ) {
     val engine = rememberEngine()
     val modelLoader = rememberModelLoader(engine)
@@ -130,6 +221,7 @@ fun PlayScreen(
 
     val anchors = remember { mutableStateListOf<Anchor>() }
     var frame by remember { mutableStateOf<Frame?>(null) }
+    var arReady by remember { mutableStateOf(false) }
     var session by remember { mutableStateOf<com.google.ar.core.Session?>(null) }
     var planeCount by remember { mutableIntStateOf(0) }
     var placed by remember { mutableStateOf(false) }
@@ -137,20 +229,49 @@ fun PlayScreen(
     // converges we re-anchor automatically so the pet stops floating.
     var placedOnPlane by remember { mutableStateOf(false) }
     var fallbackFrames by remember { mutableIntStateOf(0) }
-    // Battle staging: split-screen framing first, then the real plane takes over.
+    // Battle staging stays in the runtime for plane transfer, but the HUD no longer exposes it.
     var battleOnPlane by remember { mutableStateOf(false) }
-    val configuration = LocalConfiguration.current
-    val landscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-    var battleMenu by remember { mutableStateOf(false) }
-    var rivalName by remember { mutableStateOf("对手") }
+    var flashlight by remember { mutableStateOf(cameraLight) }
+    var clipMenu by remember { mutableStateOf(false) }
+    var shareMenu by remember { mutableStateOf(false) }
+    var adjustMode by remember { mutableStateOf(false) }
+    val cameraFillRef = remember { LightSlot() }
+    val cameraLightRef = remember { LightSlot() }
+    val adjustModeState = rememberUpdatedState(adjustMode)
+    LaunchedEffect(flashlight) {
+        cameraLightRef.node?.intensity = if (flashlight) CAMERA_LIGHT_INTENSITY else 0f
+    }
 
-    val loaded = remember(modelLoader, modelFile.path, modelFile.length()) {
+    val loaded = remember(modelLoader, pet.id, modelFile.path, modelFile.length()) {
         runCatching { loadModel(modelLoader, modelFile) }
             .onFailure { Log.e("TL", "model load failed", it) }
             .getOrNull()
     }
     val modelMissing = loaded == null
     val animationCount = loaded?.animationCount ?: 0
+
+    // Only the clips Lux3D actually documents and retargets: the menu never invents animations.
+    val apiClips = remember(loaded) {
+        val names = loaded?.animationNames.orEmpty()
+        Lux3dPipeline.ANIMATION_PRESETS.mapNotNull { id ->
+            val index = names.indexOfFirst { it.equals(id, ignoreCase = true) }
+            if (index >= 0) {
+                ApiClip(
+                    id = id,
+                    label = API_CLIP_LABELS[id] ?: id,
+                    index = index,
+                    loop = id in LOOPING_CLIPS,
+                )
+            } else {
+                null
+            }
+        }
+    }
+
+    val presentClipIds = remember(apiClips) { apiClips.map { it.id }.toSet() }
+    val missingClips = remember(presentClipIds) {
+        Lux3dPipeline.ANIMATION_PRESETS.filterNot { presentClipIds.contains(it) }
+    }
 
     // Per-frame runtime (actors, timers). Plain object: mutated 60x/s, never read for
     // recomposition; only the compose states below drive the UI.
@@ -159,52 +280,33 @@ fun PlayScreen(
     var bubble by remember {
         mutableStateOf(
             when {
-                modelMissing -> "模型没加载出来，回收藏重新制作一次"
+                modelMissing -> "模型没加载出来，回手办管理重新制作一次"
                 animationCount > 0 -> "正在找桌面…"
                 else -> "这个模型还没有动作，正在找桌面…"
             }
         )
     }
-    var reaction by remember { mutableIntStateOf(0) }
     var playingClip by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(reaction, loaded) {
-        if (reaction > 0 && loaded != null) {
-            delay(3200)
-            if (battle == null) {
-                stage.playerActor?.let { actor ->
-                    actor.playLoop(actor.pet.defaultClip)
-                    playingClip = actor.pet.clipLabel(actor.pet.defaultClip)
-                }
-            }
-        }
-    }
 
-    fun startLocalBattle() {
-        val player = stage.playerActor
-        if (player == null) {
-            bubble = "先把手办放到桌面上"
+    fun selectClip(clip: ApiClip) {
+        clipMenu = false
+        val actor = stage.playerActor
+        if (actor == null) {
+            bubble = "先把手办放到桌面上，再切换动作"
             return
         }
-        if (player.pet.attackClip < 0 || player.pet.hurtClip < 0) {
-            bubble = "这只手办还没有对战动作，用新模型重新制作一只吧"
-            return
+        stage.idleUntilNanos = 0L
+        stage.manualClip = clip.index
+        if (clip.loop) {
+            stage.oneShotUntilNanos = 0L
+            actor.playLoop(clip.index)
+        } else {
+            val duration = actor.animator.getAnimationDuration(clip.index).takeIf { it > 0.05f } ?: 1f
+            actor.playClip(clip.index, loop = false)
+            stage.oneShotUntilNanos = System.nanoTime() + (duration * 1_000_000_000L).toLong()
         }
-        val rival = spawnRival(modelLoader, modelFile, stage)
-        if (rival == null) {
-            bubble = "对手没加载出来"
-            return
-        }
-        val currentFrame = frame
-        val anchorPose = anchors.firstOrNull()?.pose
-        battleOnPlane = false
-        if (currentFrame != null && anchorPose != null) {
-            stageBattleActors(currentFrame, anchorPose, landscape, player, rival)
-        }
-        val faceoff = if (planeCount > 0) 1_200_000_000L else 5_000_000_000L
-        rivalName = "对手"
-        battle = BattleRuntime(player, rival) { bubble = it }
-            .also { it.start(System.nanoTime(), faceoff) }
-        if (planeCount == 0) bubble = "移动平板对准桌面，找到后就在桌上开打"
+        playingClip = clip.id
+        bubble = "动作：${clip.label}"
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -233,6 +335,38 @@ fun PlayScreen(
             onSessionUpdated = { active, updated ->
                 session = active
                 frame = updated
+                if (!arReady) arReady = true
+                // Baseline: a soft directional fill that always follows the camera ray.
+                val cameraPose = updated.camera.pose
+                val forward = cameraForward(cameraPose)
+                cameraFillRef.node?.lightDirection = Float3(forward[0], forward[1], forward[2])
+
+                // Optional flashlight: a real spot light positioned at the camera, aimed at the
+                // placed figure (falling back to the camera ray when nothing is out yet). Its
+                // transform is refreshed even while off so enabling it never flashes from origin.
+                val camX = cameraPose.tx()
+                val camY = cameraPose.ty()
+                val camZ = cameraPose.tz()
+                val target = stage.playerActor?.node?.worldPosition
+                val dx: Float
+                val dy: Float
+                val dz: Float
+                if (target != null) {
+                    dx = target.x - camX
+                    dy = target.y + 0.06f - camY
+                    dz = target.z - camZ
+                } else {
+                    dx = forward[0]
+                    dy = forward[1]
+                    dz = forward[2]
+                }
+                val length = sqrt(dx * dx + dy * dy + dz * dz).coerceAtLeast(1e-4f)
+                cameraLightRef.node?.lightPosition = Float3(camX, camY, camZ)
+                cameraLightRef.node?.lightDirection = Float3(
+                    dx / length,
+                    dy / length,
+                    dz / length,
+                )
                 // Only planes that are tracking, horizontal and large enough to stand on
                 // count — PAUSED or sliver-sized planes would make the count lie.
                 val usable = usablePlanes(active)
@@ -260,7 +394,10 @@ fun PlayScreen(
                             )
                         }
                         if (anchor != null) {
-                            stage.playerActor?.let { stage.pendingHeading = it.headingRad }
+                            stage.playerActor?.let {
+                                stage.pendingHeading = it.headingRad
+                                stage.pendingScale = it.userScale
+                            }
                             stage.playerActor = null
                             anchors.forEach { it.detach() }
                             anchors.clear()
@@ -295,12 +432,23 @@ fun PlayScreen(
                 stage.lastFrameNanos = now
                 stage.playerActor?.applyKnock(dt)
                 stage.rivalActor?.applyKnock(dt)
+                // One-shot clips (Punch_Jab / Hit_Chest / Death01) return to Idle when finished.
+                if (stage.oneShotUntilNanos > 0L && now >= stage.oneShotUntilNanos) {
+                    stage.oneShotUntilNanos = 0L
+                    stage.manualClip = -1
+                    stage.playerActor?.let { actor ->
+                        actor.playLoop(actor.pet.defaultClip)
+                        playingClip = actor.pet.clipLabel(actor.pet.defaultClip)
+                    }
+                }
                 val activeBattle = battle
                 if (activeBattle != null) {
                     activeBattle.update(now, dt)
                 } else {
                     stage.playerActor?.let { actor ->
-                        if (placed && actor.pet.defaultClip >= 0 && now >= stage.idleUntilNanos) {
+                        if (placed && actor.pet.defaultClip >= 0 && now >= stage.idleUntilNanos &&
+                            stage.manualClip < 0
+                        ) {
                             actor.playLoop(actor.pet.defaultClip)
                             val label = actor.pet.clipLabel(actor.pet.defaultClip)
                             if (playingClip != label) playingClip = label
@@ -310,23 +458,57 @@ fun PlayScreen(
             },
             // SceneView resolves node hits for us: hit != null means the tap landed on the pet.
             onTouchEvent = { event, hit ->
-                if (event.actionMasked != android.view.MotionEvent.ACTION_UP) {
+                val gestureActor = stage.playerActor
+                // Two fingers in adjust mode scale the figure and turn it around the plane
+                // normal (world Y, because only horizontal planes are tracked).
+                if (adjustModeState.value && gestureActor != null && event.pointerCount >= 2) {
+                    val dx = event.getX(1) - event.getX(0)
+                    val dy = event.getY(1) - event.getY(0)
+                    val distance = sqrt(dx * dx + dy * dy)
+                    val angle = atan2(dy, dx)
+                    when (event.actionMasked) {
+                        MotionEvent.ACTION_POINTER_DOWN -> {
+                            stage.gestureDistance = distance
+                            stage.gestureAngle = angle
+                            stage.suppressTap = true
+                        }
+                        MotionEvent.ACTION_MOVE -> {
+                            if (stage.gestureDistance > 1f) {
+                                gestureActor.scaleBy(distance / stage.gestureDistance)
+                                var delta = angle - stage.gestureAngle
+                                while (delta > PI.toFloat()) delta -= (2f * PI).toFloat()
+                                while (delta < -PI.toFloat()) delta += (2f * PI).toFloat()
+                                if (abs(delta) > 1e-4f) {
+                                    gestureActor.setHeading(gestureActor.headingRad - delta)
+                                }
+                            }
+                            stage.gestureDistance = distance
+                            stage.gestureAngle = angle
+                            stage.suppressTap = true
+                        }
+                        MotionEvent.ACTION_POINTER_UP -> {
+                            stage.gestureDistance = 0f
+                            stage.gestureAngle = 0f
+                            stage.suppressTap = true
+                        }
+                    }
+                    return@ARSceneView true
+                }
+                // The finger left after a pinch must not be mistaken for a placement tap.
+                if (event.actionMasked == MotionEvent.ACTION_UP && stage.suppressTap) {
+                    stage.suppressTap = false
+                    stage.gestureDistance = 0f
+                    return@ARSceneView true
+                }
+                if (event.actionMasked != MotionEvent.ACTION_UP) {
                     false
                 } else if (hit?.node != null) {
-                    if (battle == null) {
-                        bubble = "好舒服…"
-                        onBond()
-                        stage.playerActor?.let { actor ->
-                            actor.playOnce(actor.pet.idleClip)
-                            playingClip = actor.pet.clipLabel(actor.pet.idleClip)
-                            stage.idleUntilNanos = System.nanoTime() + REACTION_NANOS
-                            reaction += 1
-                        }
-                    } else {
-                        bubble = "对战进行中，打完再摸～"
-                    }
+                    // The figure itself is no longer a "pet me" target; consume the tap.
                     true
                 } else {
+                    // Repositioning is a deliberate mode: with 挪一挪 off, an empty-space tap
+                    // must not yank the figure away from where the user put it.
+                    if (placed && !adjustModeState.value) return@ARSceneView false
                     val current = frame ?: return@ARSceneView false
                     val active = session ?: return@ARSceneView false
                     val results = current.hitTest(event.x, event.y)
@@ -353,6 +535,9 @@ fun PlayScreen(
                         current.camera.pose.tx() - anchorPose.tx(),
                         current.camera.pose.tz() - anchorPose.tz(),
                     )
+                    stage.playerActor?.let { stage.pendingScale = it.userScale }
+                    stage.manualClip = -1
+                    stage.oneShotUntilNanos = 0L
                     stage.playerActor = null
                     anchors.forEach { it.detach() }
                     anchors.clear()
@@ -370,6 +555,26 @@ fun PlayScreen(
                 }
             },
             content = {
+                // Baseline fill: always on, follows the camera direction every frame.
+                LightNode(
+                    type = LightManager.Type.DIRECTIONAL,
+                    intensity = CAMERA_FILL_INTENSITY,
+                    direction = Float3(0f, 0f, -1f),
+                    nodeApply = { cameraFillRef.node = this },
+                )
+                // Optional flashlight: a spot light whose origin tracks the camera position.
+                // Keeping the node alive with zero intensity avoids rebuilding the AR graph.
+                LightNode(
+                    type = LightManager.Type.SPOT,
+                    intensity = if (flashlight) CAMERA_LIGHT_INTENSITY else 0f,
+                    direction = Float3(0f, 0f, -1f),
+                    position = Float3(0f, 0f, 0f),
+                    apply = {
+                        spotLightCone(0.32f, 0.60f)
+                        falloff(1.5f)
+                    },
+                    nodeApply = { cameraLightRef.node = this },
+                )
                 anchors.forEach { anchor ->
                     AnchorNode(
                         anchor = anchor,
@@ -384,6 +589,7 @@ fun PlayScreen(
                                     node.position = Float3(0f, pet.lift, 0f)
                                     val actor = PetActor(pet, node)
                                     actor.setHeading(stage.pendingHeading)
+                                    actor.setUserScale(stage.pendingScale)
                                     actor.playLoop(pet.defaultClip)
                                     playingClip = pet.clipLabel(pet.defaultClip)
                                     stage.playerActor = actor
@@ -396,6 +602,25 @@ fun PlayScreen(
             }
         )
 
+        if (!arReady) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(
+                    "正在打开相机…",
+                    color = Palette.Cream,
+                    fontSize = 13.sp,
+                    modifier = Modifier
+                        .liquidGlass(
+                            capsule(),
+                            base = Color(0xFF100D12),
+                            strength = 0.95f,
+                            elevated = false,
+                        )
+                        .padding(horizontal = 22.dp, vertical = 12.dp),
+                )
+            }
+        }
+
+        if (!recording) {
         Column(
             Modifier
                 .fillMaxWidth()
@@ -425,19 +650,6 @@ fun PlayScreen(
                 }
             }
 
-            val activeBattle = battle
-            if (activeBattle != null) {
-                Spacer(Modifier.height(8.dp))
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    HpPill(pet.name, activeBattle.playerHp.intValue, Palette.Coral)
-                    Text("VS", color = Palette.Mist, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                    HpPill(rivalName, activeBattle.rivalHp.intValue, Color(0xFF8FA7FF))
-                }
-            }
-
             Spacer(Modifier.height(12.dp))
             Bubble(bubble)
             if (animationCount > 0) {
@@ -450,71 +662,169 @@ fun PlayScreen(
             }
         }
 
-        // KO result panel: the fight is over, so make it unmistakable instead of leaving
-        // only a one-line bubble, and let the player rematch without leaving AR.
-        val finishedBattle = battle
-        if (finishedBattle != null && finishedBattle.finished) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Column(
-                    Modifier
-                        .width(300.dp)
-                        .clip(RoundedCornerShape(28.dp))
-                        .background(Color(0xF212060C))
-                        .padding(horizontal = 26.dp, vertical = 26.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(
-                        if (finishedBattle.winnerIsPlayer) "胜利！" else "惜败…",
-                        color = Palette.Blossom,
-                        fontSize = 32.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        if (finishedBattle.winnerIsPlayer) "${pet.name} 赢下了这场对决"
-                        else "对手赢下了这场对决，再来一次？",
-                        color = Palette.Mist,
-                        fontSize = 12.sp,
-                        textAlign = TextAlign.Center
-                    )
-                    Spacer(Modifier.height(22.dp))
-                    PrimaryButton("再来一局", Modifier.width(220.dp)) {
-                        val player = stage.playerActor
-                        val rival = stage.rivalActor
-                        if (player != null && rival != null) {
-                            battle = BattleRuntime(player, rival) { bubble = it }
-                                .also { it.start(System.nanoTime()) }
-                        }
-                    }
-                    Spacer(Modifier.height(10.dp))
-                    GhostButton("结束对战", Modifier.width(220.dp)) {
-                        endBattle(stage, modelLoader)
-                        battle = null
-                        battleOnPlane = false
-                        bubble = "对战结束"
-                    }
-                }
-            }
+        // Exit lives in the top-left corner; the bottom bar is only for pet actions.
+        Box(
+            Modifier
+                .align(Alignment.TopStart)
+                .padding(WindowInsets.statusBars.asPaddingValues())
+                .padding(start = 16.dp, top = 10.dp)
+        ) {
+            RoundButton(
+                Icons.Default.ArrowBack,
+                "退出",
+                46.dp,
+                onClick = onExit,
+                fill = Color(0xCC160B13),
+            )
         }
 
-        if (battleMenu) {
+        Box(
+            Modifier
+                .align(Alignment.TopEnd)
+                .padding(WindowInsets.statusBars.asPaddingValues())
+                .padding(end = 16.dp, top = 10.dp)
+        ) {
+            RoundButton(
+                Icons.Default.Share,
+                "分享",
+                46.dp,
+                onClick = { shareMenu = true },
+                fill = Color(0xCC160B13),
+            )
+        }
+
+        if (shareMenu) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Column(
                     Modifier
                         .width(320.dp)
                         .clip(RoundedCornerShape(28.dp))
                         .background(Color(0xF212060C))
-                        .padding(horizontal = 24.dp, vertical = 24.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
+                        .padding(horizontal = 22.dp, vertical = 22.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Text("动作对战", color = Palette.Cream, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.height(18.dp))
-                    PrimaryButton("开始对战", Modifier.width(220.dp)) {
-                        battleMenu = false
-                        startLocalBattle()
+                    Text("分享手办", color = Palette.Cream, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(12.dp))
+                    GhostButton("分享手办", Modifier.fillMaxWidth()) {
+                        shareMenu = false
+                        onShareModel(false)
                     }
                     Spacer(Modifier.height(8.dp))
-                    GhostButton("取消", Modifier.width(220.dp)) { battleMenu = false }
+                    GhostButton("录制 6 秒动态照片", Modifier.fillMaxWidth()) {
+                        shareMenu = false
+                        onRecord()
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    GhostButton("关闭", Modifier.fillMaxWidth()) { shareMenu = false }
+                }
+            }
+        }
+
+        if (clipMenu) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(
+                    Modifier
+                        .width(330.dp)
+                        .clip(RoundedCornerShape(28.dp))
+                        .background(Color(0xF212060C))
+                        .padding(horizontal = 22.dp, vertical = 22.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text("切换动作", color = Palette.Cream, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "选择要播放的动作，或按需生成新动作",
+                        color = Palette.Mist,
+                        fontSize = 11.sp
+                    )
+                    Spacer(Modifier.height(14.dp))
+                    // Only this list scrolls; the card, title and close button stay fixed.
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 380.dp)
+                            .verticalScroll(rememberScrollState()),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        if (apiClips.isEmpty()) {
+                            Text(
+                                "这个模型还没有动作，可以在下方生成",
+                                color = Palette.Mist,
+                                fontSize = 13.sp,
+                                modifier = Modifier.padding(vertical = 10.dp)
+                            )
+                        }
+                        apiClips.forEach { clip ->
+                            Chip(
+                                text = "${clip.label} · ${clip.id}",
+                                active = playingClip == clip.id,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) { selectClip(clip) }
+                            Spacer(Modifier.height(6.dp))
+                        }
+                        if (pet.rigPending) {
+                            Spacer(Modifier.height(10.dp))
+                            Text(
+                                "走路动作还在后台生成，完成后可继续生成其他动作",
+                                color = Palette.Mist,
+                                fontSize = 11.sp,
+                            )
+                        }
+                        if (missingClips.isNotEmpty()) {
+                            Spacer(Modifier.height(10.dp))
+                            Text(
+                                "生成更多动作",
+                                color = Palette.Cream,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            missingClips.forEach { id ->
+                                val busy = clipJob == id
+                                Row(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .clip(capsule())
+                                        .background(
+                                            if (busy) Palette.Blossom.copy(alpha = 0.16f)
+                                            else Color.White.copy(alpha = 0.06f)
+                                        )
+                                        .clickable(enabled = clipJob == null && !pet.rigPending) {
+                                            onGenerateClip(id)
+                                        }
+                                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        API_CLIP_LABELS[id] ?: id,
+                                        color = Palette.Cream,
+                                        fontSize = 13.sp,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    Text(
+                                        if (busy) "生成中…" else "生成",
+                                        color = if (busy) Palette.Blossom else Palette.Mist,
+                                        fontSize = 11.sp,
+                                    )
+                                }
+                                Spacer(Modifier.height(6.dp))
+                            }
+                            if (clipJob != null) {
+                                Text(
+                                    "$clipStage ${(clipProgress * 100).toInt()}%",
+                                    color = Palette.Mist,
+                                    fontSize = 10.sp,
+                                    modifier = Modifier.padding(top = 2.dp),
+                                )
+                            }
+                            clipError?.let {
+                                Text(it, color = Palette.Coral, fontSize = 11.sp)
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    GhostButton("关闭", Modifier.fillMaxWidth()) { clipMenu = false }
                 }
             }
         }
@@ -529,7 +839,7 @@ fun PlayScreen(
         ) {
             if (!placed) {
                 val hint = when {
-                    modelMissing -> "模型没加载出来，回收藏重新制作一次"
+                    modelMissing -> "模型没加载出来，回手办管理重新制作一次"
                     planeCount > 0 -> "已找到桌面（${planeCount} 处），点一下把它放下"
                     else -> "点一下先放到默认平面；对准桌面缓慢平移，会自动贴上真实桌面"
                 }
@@ -542,9 +852,10 @@ fun PlayScreen(
                 )
             } else {
                 val hint = when {
+                    adjustMode -> "双指缩放 / 绕桌面旋转 · 点空处挪位置"
                     !placedOnPlane && planeCount > 0 -> "已找到桌面（${planeCount} 处）· 马上自动贴上平面"
                     !placedOnPlane -> "正在扫描桌面… 找到后会自动贴上平面"
-                    else -> "点空处可以挪位置，点它本身是摸摸"
+                    else -> "点空处可以挪位置"
                 }
                 Text(
                     hint,
@@ -556,54 +867,46 @@ fun PlayScreen(
             }
             Row(
                 Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp)
                     .clip(capsule())
-                    .background(Color(0xCC12060C))
-                    .padding(horizontal = 10.dp, vertical = 10.dp),
-                horizontalArrangement = Arrangement.spacedBy(2.dp)
+                    .background(Color(0xE612060C))
+                    .padding(horizontal = 8.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                ActionItem(Icons.Default.Favorite, "摸摸") {
-                    if (battle != null) {
-                        bubble = "对战进行中，打完再摸～"
+                ActionItem(RecordDot, "动态照片", modifier = Modifier.weight(1f)) {
+                    onRecord()
+                }
+                ActionItem(
+                    Icons.Default.PlayArrow,
+                    "动作",
+                    modifier = Modifier.weight(1f),
+                ) { clipMenu = true }
+                ActionItem(
+                    Icons.Default.Place,
+                    "挪一挪",
+                    active = adjustMode,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    adjustMode = !adjustMode
+                    bubble = if (adjustMode) {
+                        "双指缩放 / 旋转 · 点空处挪位置"
                     } else {
-                        bubble = "好舒服…"
-                        onBond()
-                        stage.playerActor?.let { actor ->
-                            actor.playOnce(actor.pet.idleClip)
-                            playingClip = actor.pet.clipLabel(actor.pet.idleClip)
-                            stage.idleUntilNanos = System.nanoTime() + REACTION_NANOS
-                            reaction += 1
-                        }
+                        "点空处可以挪位置"
                     }
                 }
-                ActionItem(Icons.Default.Star, "喂食") {
-                    if (battle != null) {
-                        bubble = "对战进行中，打完再吃～"
-                    } else {
-                        bubble = "再来一口！"
-                        onBond()
-                        stage.playerActor?.let { actor ->
-                            actor.playOnce(actor.pet.idleClip)
-                            playingClip = actor.pet.clipLabel(actor.pet.idleClip)
-                            stage.idleUntilNanos = System.nanoTime() + REACTION_NANOS
-                            reaction += 1
-                        }
-                    }
+                ActionItem(
+                    Icons.Default.Star,
+                    "补光",
+                    active = flashlight,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    flashlight = !flashlight
+                    onToggleCameraLight(flashlight)
+                    bubble = if (flashlight) "虚拟手电筒已开启" else "虚拟手电筒已关闭"
                 }
-                ActionItem(Icons.Default.PlayArrow, if (battle == null) "对战" else "停战") {
-                    if (battle == null) {
-                        battleMenu = true
-                    } else {
-                        endBattle(stage, modelLoader)
-                        battle = null
-                        battleOnPlane = false
-                        bubble = "对战结束"
-                    }
-                }
-                ActionItem(Icons.Default.Place, "挪一挪") {
-                    bubble = "点一下新位置"
-                }
-                ActionItem(Icons.Default.List, "收藏", onExit)
             }
+        }
         }
     }
 }
@@ -782,9 +1085,27 @@ private class ArRuntime {
     var lastFrameNanos = 0L
     var idleUntilNanos = 0L
     var pendingHeading = 0f
+    var pendingScale = 1f
+    var manualClip = -1
+    var oneShotUntilNanos = 0L
+    var gestureDistance = 0f
+    var gestureAngle = 0f
+    var suppressTap = false
     var anchorNode: AnchorNode? = null
     var playerActor: PetActor? = null
     var rivalActor: PetActor? = null
+}
+
+private data class ApiClip(
+    val id: String,
+    val label: String,
+    val index: Int,
+    val loop: Boolean,
+)
+
+/** Plain holder: the light node is not Compose state and must not trigger recomposition. */
+private class LightSlot {
+    var node: LightNode? = null
 }
 
 /**
@@ -794,6 +1115,8 @@ private class ArRuntime {
 private class PetActor(val pet: LoadedPet, val node: ModelNodeImpl) {
     val animator = pet.instance.animator
     var headingRad = 0f
+    var userScale = 1f
+        private set
     private val baseQuat = node.quaternion
     private val walkSpeed = PET_WALK_SPEED * pet.scale
     private var knock = Float3(0f, 0f, 0f)
@@ -809,6 +1132,18 @@ private class PetActor(val pet: LoadedPet, val node: ModelNodeImpl) {
     fun setHeading(radians: Float) {
         headingRad = radians
         node.quaternion = quatMul(headingQuat(radians + MODEL_FORWARD_OFFSET), baseQuat)
+    }
+
+    /** User scale around the plane normal; keeps the feet glued to the plane. */
+    fun setUserScale(value: Float) {
+        userScale = value.coerceIn(0.35f, 3f)
+        val scale = pet.scale * userScale
+        node.scale = Float3(scale, scale, scale)
+        node.position = Float3(node.position.x, pet.lift * userScale, node.position.z)
+    }
+
+    fun scaleBy(factor: Float) {
+        if (factor > 0f) setUserScale(userScale * factor)
     }
 
     fun faceTowards(tx: Float, tz: Float) {
@@ -882,11 +1217,13 @@ private class PetActor(val pet: LoadedPet, val node: ModelNodeImpl) {
         playOnce(index)
     }
 
-    fun playOnce(index: Int) {
+    fun playClip(index: Int, loop: Boolean) {
         if (index < 0) return
-        playOnly(node, pet, index)
+        playOnly(node, pet, index, loop)
         lastClip = index
     }
+
+    fun playOnce(index: Int) = playClip(index, loop = true)
 
     /** Looping walk clip guard: Approach calls this per frame; restart would stutter. */
     fun ensureWalk() = playLoop(pet.walkClip)
@@ -1091,19 +1428,43 @@ private fun HpPill(name: String, hp: Int, tint: Color) {
 }
 
 @Composable
-private fun ActionItem(icon: ImageVector, label: String, onClick: () -> Unit) {
+private fun ActionItem(
+    icon: ImageVector,
+    label: String,
+    active: Boolean = false,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
     val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) 0.88f else 1f,
+        animationSpec = spring(dampingRatio = 0.5f, stiffness = 700f),
+        label = "action-press",
+    )
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier
-            .width(72.dp)
+        modifier = modifier
+            .scale(scale)
             .clip(capsule())
+            .background(
+                when {
+                    active -> Palette.Blossom.copy(alpha = 0.16f)
+                    pressed -> Color.White.copy(alpha = 0.10f)
+                    else -> Color.Transparent
+                }
+            )
             .clickable(interactionSource = interaction, indication = null, onClick = onClick)
             .padding(vertical = 6.dp)
     ) {
-        Icon(icon, contentDescription = label, tint = Palette.Cream, modifier = Modifier.size(22.dp))
+        Icon(
+            icon,
+            contentDescription = label,
+            tint = if (active) Palette.Blossom else Palette.Cream,
+            modifier = Modifier.size(22.dp)
+        )
         Spacer(Modifier.height(3.dp))
-        Text(label, color = Palette.Mist, fontSize = 10.sp)
+        Text(label, color = if (active) Palette.Blossom else Palette.Mist, fontSize = 10.sp)
     }
 }
 
@@ -1128,12 +1489,12 @@ private class LoadedPet(
  * Plays exactly one clip. SceneView keeps a map of playing animations, so
  * starting a second one without stopping the first blends two skeletons.
  */
-private fun playOnly(node: ModelNodeImpl, pet: LoadedPet, index: Int) {
+private fun playOnly(node: ModelNodeImpl, pet: LoadedPet, index: Int, loop: Boolean = true) {
     if (pet.animationCount == 0 || index < 0) return
     for (other in 0 until pet.animationCount) {
         if (other != index) node.stopAnimation(other)
     }
-    node.playAnimation(index, 1f, true)
+    node.playAnimation(index, 1f, loop)
 }
 
 /**
@@ -1145,11 +1506,14 @@ private fun playOnly(node: ModelNodeImpl, pet: LoadedPet, index: Int) {
  */
 private fun loadModel(loader: ModelLoader, file: File): LoadedPet? {
     if (!file.exists()) return null
-    return loadModel(loader, file.readBytes())
+    // Older pets were saved before the KHR_materials_specular workaround; sanitising on load
+    // fixes their black Filament material without a migration pass.
+    return loadModel(loader, sanitizeGlb(file.readBytes()))
 }
 
 /** Same as [loadModel] but for a peer pet fetched from the battle room. */
-private fun loadModel(loader: ModelLoader, bytes: ByteArray): LoadedPet? {
+private fun loadModel(loader: ModelLoader, rawBytes: ByteArray): LoadedPet? {
+    val bytes = sanitizeGlb(rawBytes)
     val buffer = ByteBuffer.allocateDirect(bytes.size).apply {
         put(bytes)
         rewind()
