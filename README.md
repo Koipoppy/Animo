@@ -4,144 +4,152 @@
 
 # Animo 灵动萌
 
-把人形角色做成会动的 AR 手办：拍一张或选一张全身人形角色图，Lux3D 负责生成 3D 模型、绑骨和动作，手机用 ARCore 把它放到真实桌面上。
+**把你喜欢的角色，做成会动的手办，放到你的桌子上。**
 
-客户端现在**直接调用 Lux3D OpenAPI**，不需要任何后端服务。API Key 由用户在设置页填写，只加密保存在本机。
+Animo 是一款原生 Android AR 手办应用。拍一张照片、从相册选一张图，或用一句话描述，Lux3D 会完成 3D 建模、绑骨和动作；手机用 ARCore 把手办放进真实空间，随时切换动作、调整光线、分享给朋友。
 
----
+`v0.9.57` · Aholo Global 3D AI Hackathon 2026 · Android 7.0+ / arm64 / ARCore
 
-## 1. 架构
+<p align="center">
+  <img src="docs/screens/home.png" width="230" alt="首页：相机就是背景" />
+  &nbsp;
+  <img src="docs/screens/scan.png" width="230" alt="应用内扫描" />
+  &nbsp;
+  <img src="docs/screens/manage.png" width="230" alt="手办管理与 3D 预览" />
+</p>
+<p align="center"><sub>相机首页 · 应用内扫描 · 手办管理</sub></p>
 
+> “不是把模型放进一个 3D 浏览器，而是让我的角色站在我的桌子上。”
+
+## 为什么是 Animo
+
+- **从一张照片开始。** 应用内多帧扫描、相册导入、文字描述三种入口，不需要任何建模经验。
+- **不注册、不登录。** 内置示例打开即玩；自定义生成只需要你自己的 Lux3D Key。
+- **等待是看得见的。** 建模成功就立即出现在手办管理页，可以先看 3D 预览、先进 AR；走路动作在后台继续生成。
+- **动作可以慢慢加。** 支持 10 种动作；不用一次等完，想要跳舞、挥剑、坐下时再单独生成。
+- **每个手办都有 3D 预览。** 管理页直接拖拽旋转、缩放、自动播放待机，点“放进现实”进入 AR。
+- **放进现实，而不是停在屏幕里。** ARCore 平面放置、贴合桌面、双指缩放、绕平面旋转，默认面向你。
+- **分享得出去。** 导出模型文件（GLB）、快捷分享给微信好友、录制 6 秒动态照片发朋友圈。
+
+## 三步做出你的手办
+
+1. **拍、选，或描述**<br>
+   首页点粉色按钮进入应用内扫描；也可以从相册导入，或在胶囊输入框里描述角色。
+2. **等它变成手办**<br>
+   Lux3D 依次完成手办化改写、参考视角补全、图生 3D、人形绑骨和动作。建模成功后会立即进入手办管理页，不需要等所有动作跑完。
+3. **放进现实**<br>
+   在管理页点“放进现实”，对着桌面找平面，点一下放置。用“挪一挪”移动，双指缩放/旋转，切换动作，打开补光，拍一段 6 秒动态照片。
+
+> 第一次打开会自带「萌萌」示例：不填 Key 也能直接进入 AR、切换待机和走路。
+
+## 功能一览
+
+### 创建
+
+| 入口 | 适合 |
+| --- | --- |
+| 应用内扫描 | 手边有玩偶、手办、手作，绕角色拍 8–12 帧 |
+| 相册导入 | 已经有一张全身角色图 |
+| 文字描述 | 还没有图，先用一句话描述角色 |
+
+- 自动补全参考视角，再生成 3D；任一步失败会自动降级或提示重新生成。
+- 原始素材保留在本地，失败或中断后可以一键“重新生成”。
+- 生成任务在前台服务中保活，切到别的应用或锁屏也能继续跑。
+
+### 手办管理
+
+- 建模成功即落库；未完成、失败的任务也会保留记录。
+- 每个手办都有 3D 预览，可拖拽旋转、缩放、自动播放待机。
+- 眼睛图标查看，铅笔图标重命名或删除。
+- 记录生成耗时；失败任务可重新生成。
+
+### AR 展示
+
+- ARCore 平面检测与锚点放置，自动贴合桌面。
+- 默认面向镜头；双指缩放、绕平面法向旋转。
+- 10 种动作：待机、走路、小跑、跳舞、点头、跳跃、坐下、出拳、挥剑、受击。
+- 走路随模型在后台生成，其余动作按需添加；每个手办最多 10 段。
+- 默认以相机方向补光，也可以打开摄像头位置的虚拟手电筒。
+
+### 分享
+
+- 导出 GLB 模型文件。
+- 快捷分享给微信好友；未安装微信时走系统分享。
+- 录制 6 秒动态照片（MP4），Android 10+ 可直接保存到相册，并分享到微信或其他应用。
+
+## 它如何工作
+
+```text
+照片 / 相册 / 文字
+        ↓
+Lux3D OpenAPI（手机直连）
+  手办化改写 → 四视角补全 → 图生 3D → 人形绑骨 → 动作重定向
+        ↓
+GLB 下载到手机 → 本地收藏 → ARCore + Filament 放进现实
 ```
-手机（原生 Android）
-  ├─ 首页应用内多帧扫描 / 相册导入 / 文字描述
-  ├─ 图片规范化（EXIF、最长边 2048、透明底压白、JPEG）
-  ├─ Lux3D 直连
-  │    ├─ OUS 图片上传
-  │    ├─ 手办化改写 + 四视角补全
-  │    ├─ 图生 3D / 文生 3D
-  │    ├─ /animations/rig 人形绑骨
-  │    └─ /animations/retarget 动作重定向
-  ├─ 下载 GLB，把 animation_1..N 重命名为 Idle_Loop / Walk_Loop / ...
-  ├─ 本地收藏（模型 + 元数据，不依赖网络回放）
-  └─ ARCore + Filament(SceneView)：平面放置、锚点、动作切换
-```
 
-后端、Docker、Galatea、Blender 兜底都已移除。Release 包不携带任何 Key；debug 包可从本地配置预填调试 Key。
+没有自建后端。上传、任务轮询、模型下载、动作重命名都在手机端完成；Release 包不包含任何 API Key。
 
----
+## 隐私与数据
 
-## 2. 功能
+- API Key 使用 Android Keystore 加密，只保存在本机。
+- 手办模型和任务记录保存在手机本地，已下载的手办断网也能回放。
+- 相机画面只用于取景、扫描和液态玻璃背景，不上传到任何 Animo 服务器。
+- 只有你主动提交的图片、多帧照片或文字描述会上传到 Lux3D，用于生成模型和动作。
 
-- **三种入口**：首页粉色按钮进入应用内扫描、相册导入、胶囊输入框文字描述；没有单独的制作页
-- **应用内扫描**：CameraX 全屏取景，轻按快门累计帧数（上限 12 帧），可回看 / 删除单帧；提交后把多帧一起上传 Lux3D 重建，再绑骨和套动作
-- **手办化链路**：平面图先改写成 T-Pose 3D 手办造型，再补全四个视角，最后图生 3D；任一步失败自动降级
-- **人形绑骨 + 动作**：Lux3D rig 后一次重定向 5 段动作
-  `Idle_Loop`、`Walk_Loop`、`Punch_Jab`、`Hit_Chest`、`Death01`
-- **AR 展示**：点桌面放置、自动贴平面、摸摸触发待机、双指缩放 / 绕平面法向旋转、默认相机方向补光 + 可选摄像头位置虚拟手电筒、按 Lux3D API 动作切换
-- **液态玻璃 UI**：按 Mikhail Bespalov 的 Liquid Glass 实现——相机画面先微模糊、再用噪声位移做折射（AGSL RuntimeShader，等价于原作的 feGaussianBlur + feDisplacementMap），配 2px 白色光圈和柔和投影；胶囊一律使用真正的半圆端胶囊。手办管理页保持相机透出，并提供一个可拖拽旋转 / 缩放 / 自动播放待机的 3D 预览面板，点任意手办即可预览
-- **失败可重试**：扫描 / 相册 / 文字任务的原始素材会保存在本地，失败或取消后可一键「重新生成」；多帧上传 3 路并发，状态轮询 1.5 秒，尽量缩短等待
-- **生成期间保活**：有任务运行时启动前台服务，切到别的应用或锁屏不会因为进程被回收而白跑；即使进程被杀，素材仍在本地，重开后可重试
-- **内置示例**：首次启动自动加入一个 T-Pose 示例手办（约 46.5 MB，2 段动作 Idle / Walk），不填 Key 也能直接 AR 展示和切换动作
-- **本地收藏与任务**：GLB 存在手机里，断网也能回放；生成任务从创建那一刻起就进入手办管理页，失败或中断也会保留记录
+## 开始使用
 
----
+### 安装
 
-## 3. 运行
+安装 `Animo-0.9.57.apk`（arm64，随交付包提供；也可以按下方从源码构建）。首次打开允许相机权限；内置「萌萌」无需 Key。
 
-### 3.1 手机要求
+创建自己的手办前，在 **设置 → Lux3D API Key** 填入自己的 Key（[labs.aholo3d.cn](https://labs.aholo3d.cn)）。
 
-- Android 7.0+（minSdk 24），arm64
-- 支持 ARCore 的设备
-- 网络可访问 `api.aholo3d.cn`
-
-### 3.2 构建
-
-用 Android Studio 打开 `android/`，或在终端：
+### 从源码构建
 
 ```bash
 export ANDROID_HOME=/path/to/Android/Sdk
-tools/build-android.sh          # 产物：根目录 Animo-<版本>.apk
-tools/install-android.sh        # 构建 + 静默安装 + 启动
+tools/build-android.sh          # 产物：根目录 Animo-0.9.57.apk
+tools/install-android.sh        # 构建 + 安装到已连接设备
 ```
 
-### 3.3 Lux3D API Key
+也可以直接用 Android Studio 打开 `android/`。
 
-在 App 的 **设置** 页填写自己的 Lux3D Key（[labs.aholo3d.cn](https://labs.aholo3d.cn)）。Key 用 Android Keystore 加密后保存在本机，不会上传到任何服务器，也不会进入 release APK。
-
-调试时可以免手动输入：把 Key 写进 **已被 git 忽略** 的 `android/local.properties`：
+调试时可以在已被 git 忽略的 `android/local.properties` 中写入：
 
 ```properties
 LUX3D_DEBUG_API_KEY=你的调试Key
 ```
 
-构建时只注入 debug 的 `BuildConfig.LUX3D_DEBUG_KEY`；release 构建始终为空。**debug APK 会包含这个调试 Key，只在本机安装，不要外发。**
+这个 Key 只会注入 debug 包；release 包始终为空。
 
-### 3.4 发布包
+## 适合什么样的角色
 
-```bash
-tools/build-release.sh          # 签名 APK/AAB，产物在根目录
-```
+为了绑骨稳定，建议使用**正面全身、双臂自然展开、双腿分开站稳**的人形角色图。抱臂、屈肘、坐姿、遮挡严重或非人形角色可能无法生成动作，App 会提示换一张图。
 
-发布包不携带任何 Key，用户首次打开会进入设置页填写自己的 Key。内置示例手办无需 Key 即可体验。
+## 项目结构
 
----
-
-## 4. 已知限制
-
-- **只支持人形角色**：Lux3D 的 rig 接受正面全身的 T-Pose / A-Pose；双臂一前一后、抱胸、屈肘、坐姿或非人形角色会返回 `MODEL_NOT_RIGGABLE`，App 会提示换一张双臂水平张开的 T-Pose 图，不再交付静态模型。
-- **需要用户自己的 Lux3D 额度**：建模、绑骨、动作都由 Lux3D 计费。
-- **不再做对战**：联机和本地对战都已移除，展示页专注于动作切换、缩放旋转和打光。
-- **没有本地绑骨兜底**：这是移除后端后的取舍；人形云端绑骨失败时会明确提示，而不是给一个不会动的模型。
-
----
-
-## 5. 目录
-
-```
-android/                       原生客户端
+```text
+android/                     原生 Android 客户端（Kotlin + Jetpack Compose）
   app/src/main/java/com/animo/ar/
-    MainActivity.kt            入口、选图/拍照、页面路由
-    AppState.kt                状态机、直接生成流程、本地收藏
-    data/
-      Lux3dClient.kt           Lux3D OpenAPI 直连客户端
-      Pipeline.kt              上传 → 手办化 → 建模 → 绑骨 → 动作
-      ImageTools.kt            图片规范化
-      GlbTools.kt              GLB 检查与动作重命名
-      RemoteImage.kt           网络图片/帖子配图下载
-      SecureStore.kt           Android Keystore 加密存储
-      PetStore.kt              本地模型与收藏索引
-    ui/                        Compose 界面与 AR 播放器
-tools/
-  build-android.sh             构建 debug APK
-  build-release.sh             构建签名 release APK/AAB
-  install-android.sh           构建 + 安装 + 启动
-  app-icon/                    图标源图
+    ui/                      相机首页、扫描、管理、AR 播放、液态玻璃
+    data/                    Lux3D 客户端、生成流水线、GLB 处理、本地存储
+    GenerationService.kt     生成任务前台保活
+    ShareRecordService.kt    6 秒动态照片录制
+  app/src/main/assets/models/sample.glb   内置「萌萌」
+tools/                       构建、安装、签名脚本
+docs/                        README 横幅与界面图
 ```
 
----
+## 已知边界
 
-## 6. 验证
+- 自定义生成需要网络和 Lux3D API 额度；内置示例不需要。
+- 每个手办最多 10 段动作（Lux3D 单次 retarget 上限）。
+- AR 展示需要设备支持 ARCore；不支持 ARCore 的设备仍可管理手办、查看 3D 预览。
+- 液态玻璃与相机帧率会因设备性能不同而有差异。
 
-已用真实 Key 跑通：
-
-- 文生 3D：T-Pose 少女手办，约 84 秒出模
-- 绑骨：约 188 秒，52 骨
-- 动作重定向：5 段动作全部成功（Idle / Walk / Punch / Hit / Death），约 12 秒
-- 最终 GLB：15.4 MB，21,638 三角面，`skins=1`，组合动作名为 `animation_1..5`，由 App 重命名后交付
-
-```bash
-cd android
-./gradlew testDebugUnitTest     # GLB 动作重命名等单元测试
-./gradlew assembleDebug
-```
-
-真机验证项：首次启动填 Key、T-Pose 人形图生成、绑骨+5 段动作、AR 桌面放置、断网回放。
-
----
-
-## 7. 许可与致谢
+## 致谢
 
 - 3D 生成 / 绑骨 / 动作：[Aholo Lux3D](https://labs.aholo3d.cn/api-docs/api-reference)
-- AR / 渲染：Google ARCore、Filament、SceneView（Apache-2.0 / MIT）
+- AR / 渲染：Google ARCore、Filament、SceneView
 - 图标插画：Animo × Lux3D
