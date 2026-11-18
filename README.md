@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/readme-banner.png" alt="Animo 灵动萌：把你喜欢的角色，做成会动的手办" width="100%" />
+</p>
+
 # Animo 灵动萌
 
 把人形角色做成会动的 AR 手办：拍一张或选一张全身人形角色图，Lux3D 负责生成 3D 模型、绑骨和动作，手机用 ARCore 把它放到真实桌面上。
