@@ -3,63 +3,15 @@ package com.animo.ar.data
 import org.json.JSONArray
 import org.json.JSONObject
 
-enum class JobStatus {
-    Queued, Fetching, Uploading, Styling, Views, Generating, Downloading, Succeeded, Failed;
-
-    val isTerminal get() = this == Succeeded || this == Failed
-
-    companion object {
-        fun parse(raw: String?): JobStatus = when (raw?.lowercase()) {
-            "queued" -> Queued
-            "fetching" -> Fetching
-            "uploading" -> Uploading
-            "styling" -> Styling
-            "views" -> Views
-            "generating" -> Generating
-            "downloading" -> Downloading
-            "succeeded" -> Succeeded
-            "failed" -> Failed
-            else -> Queued
-        }
-    }
-}
-
-/** Mirrors the public shape of a backend job. */
+/** Local generation progress shown on the hatching screen. */
 data class Job(
-    val id: String,
-    val name: String,
-    val inputKind: String,
-    val status: JobStatus,
-    val stage: String?,
+    val stage: String,
     val progress: Float,
-    val source: String?,
-    val demo: Boolean,
-    val modelUrl: String?,
-    val error: String?,
-    val triangles: Int,
-    val animations: Int,
-    val bones: Int,
-    val engine: String?,
-) {
-    companion object {
-        fun parse(json: JSONObject): Job = Job(
-            id = json.optString("id"),
-            name = json.optString("name"),
-            inputKind = json.optString("inputKind", "photo"),
-            status = JobStatus.parse(json.optString("status")),
-            stage = json.optString("stage").takeIf { it.isNotEmpty() },
-            progress = json.optDouble("progress", 0.0).toFloat(),
-            source = json.optString("source").takeIf { it.isNotEmpty() },
-            demo = json.optBoolean("demo", false),
-            modelUrl = json.optString("modelUrl").takeIf { it.isNotEmpty() },
-            error = json.optString("error").takeIf { it.isNotEmpty() },
-            triangles = json.optJSONObject("stats")?.optInt("triangles", 0) ?: 0,
-            animations = json.optJSONObject("stats")?.optInt("animations", 0) ?: 0,
-            bones = json.optJSONObject("stats")?.optInt("bones", 0) ?: 0,
-            engine = json.optJSONObject("stats")?.optString("engine")?.takeIf { it.isNotEmpty() },
-        )
-    }
-}
+    val triangles: Int = 0,
+    val animations: Int = 0,
+    val bones: Int = 0,
+    val engine: String = "lux3d",
+)
 
 data class PetRecord(
     val id: String,

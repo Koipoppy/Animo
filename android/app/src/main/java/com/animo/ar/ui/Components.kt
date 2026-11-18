@@ -33,6 +33,7 @@ import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -271,6 +272,7 @@ fun CapsuleField(
     onValueChange: (String) -> Unit,
     placeholder: String,
     modifier: Modifier = Modifier,
+    visualTransformation: VisualTransformation = VisualTransformation.None,
 ) {
     Box(
         modifier
@@ -285,6 +287,7 @@ fun CapsuleField(
             value = value,
             onValueChange = onValueChange,
             singleLine = true,
+            visualTransformation = visualTransformation,
             textStyle = TextStyle(color = Palette.Cream, fontSize = 15.sp),
             modifier = Modifier.fillMaxWidth(),
             decorationBox = { inner ->

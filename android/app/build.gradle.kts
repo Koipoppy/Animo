@@ -6,28 +6,20 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-// Release config stays out of git: android/keystore.properties supplies signing, and
-// ANIMO_API_BASE_URL supplies the deployed backend (pass with -P or the env var).
+// Signing config stays out of git: android/keystore.properties supplies it.
+// The Lux3D key is entered by the user at runtime; debug builds may prefill a
+// developer-only key from android/local.properties (git-ignored).
 val keystorePropertiesFile = rootProject.file("keystore.properties")
 val keystoreProperties = Properties().apply {
     if (keystorePropertiesFile.isFile) {
         keystorePropertiesFile.inputStream().use { load(it) }
     }
 }
-val releaseApiBaseUrl = (project.findProperty("ANIMO_API_BASE_URL") as String?)
-    ?: System.getenv("ANIMO_API_BASE_URL")
-    ?: ""
-val buildingRelease = gradle.startParameter.taskNames.any {
-    it.contains("release", ignoreCase = true) || it == "build"
+val localProperties = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.isFile) file.inputStream().use { load(it) }
 }
-if (buildingRelease) {
-    check(releaseApiBaseUrl.isNotBlank()) {
-        "release 构建需要 ANIMO_API_BASE_URL（例如 -PANIMO_API_BASE_URL=https://api.example.com）"
-    }
-    check(releaseApiBaseUrl.startsWith("https://")) {
-        "release 构建的后端地址必须是 https://，当前为：$releaseApiBaseUrl"
-    }
-}
+val debugApiKey = localProperties.getProperty("LUX3D_DEBUG_API_KEY").orEmpty()
 fun String.quotedForBuildConfig(): String =
     "\"" + replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 
@@ -39,14 +31,10 @@ android {
         applicationId = "com.animo.ar"
         minSdk = 24
         targetSdk = 36
-        versionCode = 15
-        versionName = "0.4.3"
+        versionCode = 16
+        versionName = "0.5.0"
         // Filament ships every ABI; phones are arm64 and the emulator is not used for AR.
         ndk { abiFilters += listOf("arm64-v8a") }
-        // Cloud Anchors API key (Google Cloud project with the ARCore API enabled).
-        manifestPlaceholders["arcoreApiKey"] = (project.findProperty("ARCORE_API_KEY") as String?) ?: ""
-        // Debug talks to adb reverse / LAN over HTTP; release is HTTPS-only.
-        manifestPlaceholders["usesCleartextTraffic"] = "true"
     }
 
     signingConfigs {
@@ -65,13 +53,11 @@ android {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.findByName("release")
-            buildConfigField("String", "API_BASE_URL", releaseApiBaseUrl.quotedForBuildConfig())
-            manifestPlaceholders["usesCleartextTraffic"] = "false"
+            buildConfigField("String", "LUX3D_DEBUG_KEY", "\"\"")
         }
         debug {
             isMinifyEnabled = false
-            buildConfigField("String", "API_BASE_URL", "http://127.0.0.1:8787".quotedForBuildConfig())
-            manifestPlaceholders["usesCleartextTraffic"] = "true"
+            buildConfigField("String", "LUX3D_DEBUG_KEY", debugApiKey.quotedForBuildConfig())
         }
     }
 
@@ -114,4 +100,8 @@ dependencies {
     // ARCore + Filament wrapper (Sceneform successor). 3.6.2 is the newest line that does not
     // require compileSdk 37, which this machine's SDK does not have.
     implementation("io.github.sceneview:arsceneview:3.6.2")
+
+    testImplementation("junit:junit:4.13.2")
+    // JVM unit tests need a real org.json implementation (the Android jar stubs it).
+    testImplementation("org.json:json:20240303")
 }

@@ -10,7 +10,14 @@ export MSYS_NO_PATHCONV=1
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ANDROID="$ROOT/android"
-GRADLE="${GRADLE:-/c/Users/chenyuchong/.gradle/wrapper/dists/gradle-8.14.3-bin/cv11ve7ro1n3o1j4so8xd9n66/gradle-8.14.3/bin/gradle}"
+GRADLE="${GRADLE:-$(command -v gradle || true)}"
+if [ -z "$GRADLE" ]; then
+  GRADLE="$(find "${HOME}/.gradle/wrapper/dists" -path "*gradle-8.14.3*/bin/gradle" -type f 2>/dev/null | head -1)"
+fi
+[ -n "$GRADLE" ] && [ -x "$GRADLE" ] || {
+  echo "找不到 Gradle，请设置 GRADLE=/path/to/gradle" >&2
+  exit 2
+}
 BUILT="$ANDROID/app/build/outputs/apk/debug/app-debug.apk"
 
 VERSION="$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' "$ANDROID/app/build.gradle.kts" | head -1)"

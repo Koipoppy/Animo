@@ -28,7 +28,6 @@ import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Icon
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -37,7 +36,6 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -57,9 +55,6 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 import kotlin.coroutines.resume
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import com.google.ar.core.Anchor
 import com.google.ar.core.Config
@@ -67,8 +62,6 @@ import com.google.ar.core.Frame
 import com.google.ar.core.InstantPlacementPoint
 import com.google.ar.core.Plane
 import com.animo.ar.Palette
-import com.animo.ar.data.BattleClient
-import com.animo.ar.data.BattleRoom
 import com.animo.ar.data.PetRecord
 import io.github.sceneview.ar.ARSceneView
 import io.github.sceneview.ar.node.AnchorNode
@@ -102,7 +95,7 @@ private const val FALLBACK_GRACE_FRAMES = 45
 private const val PET_WALK_SPEED = 1.4f
 // Patrol turns continuously, so the walk path is a smooth circle instead of a wall bounce.
 private const val PET_TURN_RATE = 1.4f
-// Lux3D/Blender exports face +Z while the heading math assumes -Z; half a turn aligns them.
+// Lux3D exports face +Z while the heading math assumes -Z; half a turn aligns them.
 private const val MODEL_FORWARD_OFFSET = PI.toFloat()
 private const val REACTION_NANOS = 3_200_000_000L
 
@@ -119,7 +112,6 @@ private const val BATTLE_DAMAGE = 20
 fun PlayScreen(
     pet: PetRecord,
     modelFile: File,
-    battleClient: BattleClient? = null,
     onBond: () -> Unit,
     onExit: () -> Unit,
 ) {
@@ -149,13 +141,7 @@ fun PlayScreen(
     var battleOnPlane by remember { mutableStateOf(false) }
     val configuration = LocalConfiguration.current
     val landscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-    // Online room: both terminals exchange pets and agree on one start timestamp.
-    val scope = rememberCoroutineScope()
     var battleMenu by remember { mutableStateOf(false) }
-    var room by remember { mutableStateOf<BattleRoom?>(null) }
-    var joinCode by remember { mutableStateOf("") }
-    var onlineStatus by remember { mutableStateOf<String?>(null) }
-    var onlineBattle by remember { mutableStateOf(false) }
     var rivalName by remember { mutableStateOf("对手") }
 
     val loaded = remember(modelLoader, modelFile.path, modelFile.length()) {
@@ -173,7 +159,7 @@ fun PlayScreen(
     var bubble by remember {
         mutableStateOf(
             when {
-                modelMissing -> "模型没加载出来，回图鉴重新生成一次"
+                modelMissing -> "模型没加载出来，回收藏重新制作一次"
                 animationCount > 0 -> "正在找桌面…"
                 else -> "这个模型还没有动作，正在找桌面…"
             }
@@ -196,11 +182,11 @@ fun PlayScreen(
     fun startLocalBattle() {
         val player = stage.playerActor
         if (player == null) {
-            bubble = "先把宠物放到桌面上"
+            bubble = "先把手办放到桌面上"
             return
         }
         if (player.pet.attackClip < 0 || player.pet.hurtClip < 0) {
-            bubble = "这只宠物还没有对战动作，用新模型重新生成一只吧"
+            bubble = "这只手办还没有对战动作，用新模型重新制作一只吧"
             return
         }
         val rival = spawnRival(modelLoader, modelFile, stage)
@@ -215,181 +201,10 @@ fun PlayScreen(
             stageBattleActors(currentFrame, anchorPose, landscape, player, rival)
         }
         val faceoff = if (planeCount > 0) 1_200_000_000L else 5_000_000_000L
-        onlineBattle = false
         rivalName = "对手"
         battle = BattleRuntime(player, rival) { bubble = it }
             .also { it.start(System.nanoTime(), faceoff) }
         if (planeCount == 0) bubble = "移动平板对准桌面，找到后就在桌上开打"
-    }
-
-    /** Shared by host and guest: wait for the agreed epoch-ms instant, then fight locally. */
-    suspend fun beginOnlineBattle(
-        startAt: Long,
-        peerModelBytes: ByteArray,
-        sharedPose: com.google.ar.core.Pose? = null,
-    ) {
-        val player = stage.playerActor
-        if (player == null) {
-            onlineStatus = "宠物不在场"
-            return
-        }
-        onlineStatus = "正在同步对手精灵…"
-        val rivalPet = runCatching { loadModel(modelLoader, peerModelBytes) }.getOrNull()
-        if (rivalPet == null) {
-            onlineStatus = "对手精灵加载失败"
-            return
-        }
-        val node = ModelNodeImpl(rivalPet.instance, false, null)
-        node.scale = Float3(rivalPet.scale, rivalPet.scale, rivalPet.scale)
-        node.position = Float3(RIVAL_OFFSET_X, rivalPet.lift, 0f)
-        val rival = PetActor(rivalPet, node)
-        rival.faceTowards(0f, 0f)
-        rival.playLoop(rivalPet.idleClip)
-        stage.anchorNode?.addChildNode(node)
-        stage.rivalActor = rival
-        val currentFrame = frame
-        val anchorPose = anchors.firstOrNull()?.pose
-        if (sharedPose != null && anchorPose != null) {
-            // Same physical pose on both terminals: the pets stand on the same real table.
-            stageSharedBattle(sharedPose, anchorPose, player, rival)
-        } else if (currentFrame != null && anchorPose != null) {
-            stageBattleActors(currentFrame, anchorPose, landscape, player, rival)
-        }
-        onlineStatus = "准备开战…"
-        // A cancelled scope aborts here, so no extra flag is needed.
-        delay((startAt - System.currentTimeMillis()).coerceAtLeast(0L))
-        onlineBattle = true
-        rivalName = room?.peerName ?: "对手"
-        room = null
-        battleOnPlane = sharedPose != null
-        battle = BattleRuntime(player, rival) { bubble = it }
-            .also { it.start(System.nanoTime(), 1_200_000_000L) }
-        onlineStatus = null
-    }
-
-    fun hostRoom() {
-        val client = battleClient
-        if (client == null) {
-            battleMenu = false
-            bubble = "后端未配置，无法联机"
-            return
-        }
-        if (stage.playerActor == null) {
-            battleMenu = false
-            bubble = "先把宠物放到桌面上"
-            return
-        }
-        battleMenu = false
-        scope.launch {
-            try {
-                onlineStatus = "正在上传精灵并创建房间…"
-                val created = client.create(pet.name, modelFile.readBytes())
-                room = created
-                onlineStatus = "房间码 ${created.code}，等待对手加入…"
-                while (isActive) {
-                    delay(1000)
-                    val current = client.poll(created.code, "host")
-                    if (current.status == "ready") {
-                        room = current
-                        onlineStatus = "对手已加入，正在共享桌面…（请对准桌面缓慢平移）"
-                        // A Cloud Anchor must be hosted on a real tracked plane anchor.
-                        var planeAnchor: Anchor? = null
-                        val waitUntil = System.currentTimeMillis() + 15_000
-                        while (isActive && System.currentTimeMillis() < waitUntil) {
-                            if (placedOnPlane) {
-                                planeAnchor = anchors.firstOrNull()
-                                if (planeAnchor != null) break
-                            }
-                            delay(400)
-                        }
-                        var sharedPose: com.google.ar.core.Pose? = null
-                        val currentSession = session
-                        val plane = planeAnchor
-                        if (plane != null && currentSession != null) {
-                            onlineStatus = "正在上传共享桌面…"
-                            val cloudId = hostCloudAnchor(currentSession, plane)
-                            if (cloudId != null) {
-                                client.setAnchor(created.code, "host", cloudId)
-                                sharedPose = plane.pose
-                            } else {
-                                onlineStatus = "Cloud Anchor 不可用，先按各自设备开战"
-                            }
-                        } else {
-                            onlineStatus = "没找到桌面，先按各自设备开战"
-                        }
-                        val leadMs = if (sharedPose != null) 9000L else 2000L
-                        val started = client.start(created.code, "host", leadMs)
-                        val peer = client.downloadPeerModel(created.code, "guest")
-                        beginOnlineBattle(
-                            started.startAt ?: (System.currentTimeMillis() + leadMs),
-                            peer,
-                            sharedPose,
-                        )
-                        break
-                    }
-                }
-            } catch (error: Exception) {
-                onlineStatus = error.message ?: "联机失败"
-            }
-        }
-    }
-
-    fun joinRoom() {
-        val client = battleClient
-        if (client == null) {
-            bubble = "后端未配置，无法联机"
-            return
-        }
-        if (stage.playerActor == null) {
-            bubble = "先把宠物放到桌面上"
-            return
-        }
-        val code = joinCode.trim()
-        if (code.length != 4) {
-            onlineStatus = "请输入 4 位房间码"
-            return
-        }
-        battleMenu = false
-        scope.launch {
-            try {
-                onlineStatus = "正在加入房间…"
-                val joined = client.join(code, pet.name, modelFile.readBytes())
-                room = joined
-                onlineStatus = "已加入，等待房主共享桌面…"
-                var sharedPose: com.google.ar.core.Pose? = null
-                var resolveTried = false
-                while (isActive) {
-                    delay(800)
-                    val current = client.poll(code, "guest")
-                    room = current
-                    val cloudId = current.cloudAnchorId
-                    if (cloudId != null && !resolveTried) {
-                        resolveTried = true
-                        onlineStatus = "正在对齐到房主的桌面…"
-                        val currentSession = session
-                        if (currentSession != null) {
-                            sharedPose = resolveCloudAnchor(currentSession, cloudId)?.pose
-                        }
-                        if (sharedPose == null) {
-                            onlineStatus = "Cloud Anchor 对齐失败，改用本机桌面"
-                        }
-                    }
-                    if (current.startAt != null) {
-                        val peer = client.downloadPeerModel(code, "host")
-                        beginOnlineBattle(current.startAt, peer, sharedPose)
-                        break
-                    }
-                }
-            } catch (error: Exception) {
-                onlineStatus = error.message ?: "加入失败"
-            }
-        }
-    }
-
-    fun cancelOnline() {
-        room?.let { current -> scope.launch { battleClient?.close(current.code) } }
-        room = null
-        onlineStatus = null
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -405,8 +220,6 @@ fun PlayScreen(
                 config.instantPlacementMode = Config.InstantPlacementMode.LOCAL_Y_UP
                 config.lightEstimationMode = Config.LightEstimationMode.ENVIRONMENTAL_HDR
                 config.focusMode = Config.FocusMode.AUTO
-                // Shared physical space for online battles; harmless when no API key is set.
-                runCatching { config.cloudAnchorMode = Config.CloudAnchorMode.ENABLED }
                 // Process the newest camera frame instead of queueing stale ones: on slower
                 // tablets backpressure delays plane discovery by whole seconds.
                 runCatching { config.updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE }
@@ -488,7 +301,7 @@ fun PlayScreen(
                 } else {
                     stage.playerActor?.let { actor ->
                         if (placed && actor.pet.defaultClip >= 0 && now >= stage.idleUntilNanos) {
-                            actor.patrol(dt)
+                            actor.playLoop(actor.pet.defaultClip)
                             val label = actor.pet.clipLabel(actor.pet.defaultClip)
                             if (playingClip != label) playingClip = label
                         }
@@ -665,31 +478,26 @@ fun PlayScreen(
                         textAlign = TextAlign.Center
                     )
                     Spacer(Modifier.height(22.dp))
-                    // A rematch is local-only; online rooms use the shared start timestamp.
-                    if (!onlineBattle) {
-                        PrimaryButton("再来一局", Modifier.width(220.dp)) {
-                            val player = stage.playerActor
-                            val rival = stage.rivalActor
-                            if (player != null && rival != null) {
-                                battle = BattleRuntime(player, rival) { bubble = it }
-                                    .also { it.start(System.nanoTime()) }
-                            }
+                    PrimaryButton("再来一局", Modifier.width(220.dp)) {
+                        val player = stage.playerActor
+                        val rival = stage.rivalActor
+                        if (player != null && rival != null) {
+                            battle = BattleRuntime(player, rival) { bubble = it }
+                                .also { it.start(System.nanoTime()) }
                         }
-                        Spacer(Modifier.height(10.dp))
                     }
+                    Spacer(Modifier.height(10.dp))
                     GhostButton("结束对战", Modifier.width(220.dp)) {
                         endBattle(stage, modelLoader)
                         battle = null
                         battleOnPlane = false
-                        onlineBattle = false
                         bubble = "对战结束"
                     }
                 }
             }
         }
 
-        val currentRoom = room
-        if (battleMenu || currentRoom != null || onlineStatus != null) {
+        if (battleMenu) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Column(
                     Modifier
@@ -699,68 +507,14 @@ fun PlayScreen(
                         .padding(horizontal = 24.dp, vertical = 24.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    when {
-                        currentRoom != null -> {
-                            Text("联机对战", color = Palette.Cream, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                            Spacer(Modifier.height(14.dp))
-                            Text("房间码", color = Palette.Mist, fontSize = 12.sp)
-                            Text(
-                                currentRoom.code,
-                                color = Palette.Blossom,
-                                fontSize = 42.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Spacer(Modifier.height(10.dp))
-                            Text(
-                                onlineStatus ?: "等待中…",
-                                color = Palette.Mist,
-                                fontSize = 12.sp,
-                                textAlign = TextAlign.Center
-                            )
-                            Spacer(Modifier.height(20.dp))
-                            GhostButton("取消", Modifier.width(220.dp)) {
-                                cancelOnline()
-                                battleMenu = false
-                            }
-                        }
-                        onlineStatus != null -> {
-                            Text("联机对战", color = Palette.Cream, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                            Spacer(Modifier.height(12.dp))
-                            Text(
-                                onlineStatus!!,
-                                color = Palette.Mist,
-                                fontSize = 13.sp,
-                                textAlign = TextAlign.Center
-                            )
-                            Spacer(Modifier.height(20.dp))
-                            GhostButton("关闭", Modifier.width(220.dp)) {
-                                onlineStatus = null
-                                battleMenu = false
-                            }
-                        }
-                        else -> {
-                            Text("对战", color = Palette.Cream, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                            Spacer(Modifier.height(18.dp))
-                            PrimaryButton("单机对战", Modifier.width(220.dp)) {
-                                battleMenu = false
-                                startLocalBattle()
-                            }
-                            Spacer(Modifier.height(10.dp))
-                            GhostButton("创建联机房间", Modifier.width(220.dp)) { hostRoom() }
-                            Spacer(Modifier.height(14.dp))
-                            OutlinedTextField(
-                                value = joinCode,
-                                onValueChange = { joinCode = it.filter(Char::isDigit).take(4) },
-                                label = { Text("房间码") },
-                                singleLine = true,
-                                modifier = Modifier.width(220.dp)
-                            )
-                            Spacer(Modifier.height(8.dp))
-                            GhostButton("加入房间", Modifier.width(220.dp)) { joinRoom() }
-                            Spacer(Modifier.height(8.dp))
-                            GhostButton("取消", Modifier.width(220.dp)) { battleMenu = false }
-                        }
+                    Text("动作对战", color = Palette.Cream, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(18.dp))
+                    PrimaryButton("开始对战", Modifier.width(220.dp)) {
+                        battleMenu = false
+                        startLocalBattle()
                     }
+                    Spacer(Modifier.height(8.dp))
+                    GhostButton("取消", Modifier.width(220.dp)) { battleMenu = false }
                 }
             }
         }
@@ -775,7 +529,7 @@ fun PlayScreen(
         ) {
             if (!placed) {
                 val hint = when {
-                    modelMissing -> "模型没加载出来，回图鉴重新生成一次"
+                    modelMissing -> "模型没加载出来，回收藏重新制作一次"
                     planeCount > 0 -> "已找到桌面（${planeCount} 处），点一下把它放下"
                     else -> "点一下先放到默认平面；对准桌面缓慢平移，会自动贴上真实桌面"
                 }
@@ -842,14 +596,13 @@ fun PlayScreen(
                         endBattle(stage, modelLoader)
                         battle = null
                         battleOnPlane = false
-                        onlineBattle = false
                         bubble = "对战结束"
                     }
                 }
                 ActionItem(Icons.Default.Place, "挪一挪") {
                     bubble = "点一下新位置"
                 }
-                ActionItem(Icons.Default.List, "图鉴", onExit)
+                ActionItem(Icons.Default.List, "收藏", onExit)
             }
         }
     }
@@ -983,62 +736,6 @@ private fun moveBattleToPlane(
     )
     player.faceTowards(rival.node.position.x, rival.node.position.z)
     rival.faceTowards(player.node.position.x, player.node.position.z)
-}
-
-/**
- * Places an online battle in the shared Cloud Anchor frame: both terminals compute the same
- * world positions from the same physical pose, so the pets stand on the same real table.
- */
-private fun stageSharedBattle(
-    sharedPose: com.google.ar.core.Pose,
-    anchorPose: com.google.ar.core.Pose,
-    player: PetActor,
-    rival: PetActor,
-) {
-    val playerWorld = sharedPose.compose(com.google.ar.core.Pose.makeTranslation(-0.15f, 0f, 0f))
-    val rivalWorld = sharedPose.compose(com.google.ar.core.Pose.makeTranslation(0.15f, 0f, 0f))
-    player.placeAt(
-        playerWorld.tx() - anchorPose.tx(),
-        playerWorld.ty() - anchorPose.ty() + player.pet.lift,
-        playerWorld.tz() - anchorPose.tz(),
-    )
-    rival.placeAt(
-        rivalWorld.tx() - anchorPose.tx(),
-        rivalWorld.ty() - anchorPose.ty() + rival.pet.lift,
-        rivalWorld.tz() - anchorPose.tz(),
-    )
-    player.faceTowards(rival.node.position.x, rival.node.position.z)
-    rival.faceTowards(player.node.position.x, player.node.position.z)
-}
-
-/** Hosts a Cloud Anchor for the plane; null on timeout or when the API key is missing. */
-private suspend fun hostCloudAnchor(
-    session: com.google.ar.core.Session,
-    anchor: Anchor,
-): String? = withTimeoutOrNull(25_000) {
-    suspendCancellableCoroutine { continuation ->
-        session.hostCloudAnchorAsync(anchor, 1) { cloudId, state ->
-            if (continuation.isActive) {
-                continuation.resume(
-                    if (state == Anchor.CloudAnchorState.SUCCESS) cloudId else null
-                )
-            }
-        }
-    }
-}
-
-/** Resolves the host's Cloud Anchor into an anchor in this device's world. */
-private suspend fun resolveCloudAnchor(
-    session: com.google.ar.core.Session,
-    cloudId: String,
-): Anchor? = withTimeoutOrNull(25_000) {
-    suspendCancellableCoroutine { continuation ->
-        session.resolveCloudAnchorAsync(cloudId) { anchor, state ->
-            if (continuation.isActive) {
-                continuation.resume(if (state == Anchor.CloudAnchorState.SUCCESS) anchor else null)
-            }
-        }
-    }
 }
 
 /** Planes a pet can actually stand on: tracking, horizontal, and at least 20 x 20 cm. */
@@ -1192,7 +889,7 @@ private class PetActor(val pet: LoadedPet, val node: ModelNodeImpl) {
     }
 
     /** Looping walk clip guard: Approach calls this per frame; restart would stutter. */
-    fun ensureWalk() = playLoop(pet.defaultClip)
+    fun ensureWalk() = playLoop(pet.walkClip)
 
     fun clipLabel(): String = pet.clipLabel(lastClip.coerceAtLeast(0))
 }
@@ -1277,7 +974,7 @@ private class BattleRuntime(
         defender.playLoop(defender.pet.idleClip)
         hitAt = now + (attackDuration * 0.55f * 1_000_000_000L).toLong()
         deadline = now + (attackDuration * 1_000_000_000L).toLong()
-        onBubble(if (attacker === player) "伽拉忒亚 出手！" else "对手 出手！")
+        onBubble(if (attacker === player) "你的手办 出手！" else "对手 出手！")
     }
 
     private fun applyHit(now: Long) {
@@ -1305,7 +1002,7 @@ private class BattleRuntime(
         deadline = now + ((attackDuration * 0.5f + 0.45f) * 1_000_000_000L).toLong()
         phase = Phase.RECOVER
         onBubble(
-            if (attacker === player) "对手 受击 -$BATTLE_DAMAGE" else "伽拉忒亚 受击 -$BATTLE_DAMAGE"
+            if (attacker === player) "对手 受击 -$BATTLE_DAMAGE" else "你的手办 受击 -$BATTLE_DAMAGE"
         )
     }
 
@@ -1329,7 +1026,7 @@ private class BattleRuntime(
         val loser = if (winnerIsPlayer) rival else player
         if (loser.pet.deathClip >= 0) loser.playOnce(loser.pet.deathClip) else loser.playOnce(loser.pet.hurtClip)
         winner.playLoop(winner.pet.idleClip)
-        onBubble(if (winnerIsPlayer) "伽拉忒亚 胜利！" else "对手 获胜…")
+        onBubble(if (winnerIsPlayer) "你的手办 胜利！" else "对手 获胜…")
     }
 }
 
@@ -1417,6 +1114,7 @@ private class LoadedPet(
     val lift: Float,
     val animationCount: Int,
     val idleClip: Int,
+    val walkClip: Int,
     val defaultClip: Int,
     val attackClip: Int,
     val hurtClip: Int,
@@ -1474,6 +1172,7 @@ private fun loadModel(loader: ModelLoader, bytes: ByteArray): LoadedPet? {
     val idle = names.indexOfFirst { it.contains("idle", ignoreCase = true) }
     val walk = names.indexOfFirst { it.contains("walk", ignoreCase = true) }
     val default = when {
+        idle >= 0 -> idle
         walk >= 0 -> walk
         count > 0 -> 0
         else -> -1
@@ -1487,6 +1186,7 @@ private fun loadModel(loader: ModelLoader, bytes: ByteArray): LoadedPet? {
         lift = -bottom * scale,
         animationCount = count,
         idleClip = if (idle >= 0) idle else default,
+        walkClip = if (walk >= 0) walk else default,
         defaultClip = default,
         attackClip = attack,
         hurtClip = hurt,

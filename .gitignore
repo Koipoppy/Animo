@@ -4,21 +4,9 @@
 .vs/
 .idea/
 
-# Backend
-Backend/node_modules/
-Backend/.env
-Backend/data/
-
 # Local tooling
 _installers/
 .zcode/
-
-# Local HTTPS certs and generated Caddy config
-Backend/certs/
-Backend/Caddyfile.ip
-
-Backend/data-smoke/
-
 build.log
 NUL
 

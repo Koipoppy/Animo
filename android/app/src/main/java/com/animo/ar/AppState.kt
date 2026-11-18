@@ -6,13 +6,19 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.animo.ar.data.ApiClient
+import com.animo.ar.data.CreateInput
 import com.animo.ar.data.Job
-import com.animo.ar.data.JobStatus
+import com.animo.ar.data.Lux3dClient
+import com.animo.ar.data.Lux3dPipeline
 import com.animo.ar.data.PetRecord
 import com.animo.ar.data.PetStore
 import com.animo.ar.data.Settings
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.time.Instant
+import java.util.UUID
 
 enum class Screen { Home, Create, Hatching, Play, Settings }
 
@@ -52,6 +58,40 @@ class AppState(app: Application) : AndroidViewModel(app) {
     var tab by mutableStateOf(CreateTab.Photo)
     var pickedPhoto by mutableStateOf<ByteArray?>(null)
 
+    private var runningJob: kotlinx.coroutines.Job? = null
+
+    init {
+        seedSample()
+    }
+
+    /** Copies the bundled T-Pose sample into the collection once, so the app is never empty. */
+    private fun seedSample() {
+        if (settings.sampleSeeded) return
+        if (store.list().any { it.id == SAMPLE_ID }) {
+            settings.sampleSeeded = true
+            return
+        }
+        viewModelScope.launch {
+            val bytes = withContext(Dispatchers.IO) {
+                runCatching {
+                    getApplication<Application>().assets.open("models/sample.glb").use { it.readBytes() }
+                }.getOrNull()
+            } ?: return@launch
+            val record = PetRecord(
+                id = SAMPLE_ID,
+                name = "示例手办",
+                inputKind = "sample",
+                source = "sample",
+                createdAtUtc = Instant.now().toString(),
+                bond = 0,
+                triangles = 21_638,
+            )
+            withContext(Dispatchers.IO) { store.add(record, bytes) }
+            settings.sampleSeeded = true
+            refresh()
+        }
+    }
+
     fun go(target: Screen) {
         screen = target
         if (target != Screen.Hatching) status = ""
@@ -89,73 +129,121 @@ class AppState(app: Application) : AndroidViewModel(app) {
         refresh()
     }
 
-    /** Starts a Lux3D job and polls it to completion, then stores the GLB locally. */
+    /** Generates a humanoid figure directly against Lux3D, then stores the GLB locally. */
     fun hatch() {
-        val api = ApiClient(settings.serverUrl, settings.secret)
-        val cleanName = name.trim().ifEmpty { "小伙伴" }
-        val style = if (plush) "plush" else "faithful"
+        val key = settings.apiKey
+        if (key.isBlank()) {
+            status = "请先在设置中填写 Lux3D API Key"
+            screen = Screen.Settings
+            return
+        }
+
+        val cleanName = name.trim().ifEmpty { "无名手办" }
+        val input: CreateInput = when (tab) {
+            CreateTab.Photo, CreateTab.Gallery -> {
+                val bytes = pickedPhoto ?: run {
+                    status = "先选一张全身人形角色的图片"
+                    return
+                }
+                CreateInput.Photo(bytes)
+            }
+            CreateTab.Link -> {
+                val url = link.trim()
+                if (!url.startsWith("https://")) {
+                    status = "链接要以 https:// 开头"
+                    return
+                }
+                CreateInput.Link(url)
+            }
+            CreateTab.Text -> {
+                val text = prompt.trim()
+                if (text.length < 2 || text.length > 200) {
+                    status = "文字描述需要 2 到 200 个字"
+                    return
+                }
+                CreateInput.Text(text)
+            }
+        }
 
         viewModelScope.launch {
             busy = true
             hatchSucceeded = false
             screen = Screen.Hatching
-            status = "正在上传"
+            job = Job("正在准备", 0.01f)
+            status = "正在准备"
             try {
-                val created = when (tab) {
-                    CreateTab.Photo, CreateTab.Gallery -> {
-                        val bytes = pickedPhoto ?: throw IllegalStateException("先选一张图片")
-                        api.createFromPhoto(bytes, cleanName, style)
-                    }
-                    CreateTab.Link -> {
-                        val url = link.trim()
-                        if (!url.startsWith("http")) throw IllegalStateException("链接要以 http 开头")
-                        api.createFromUrl(url, cleanName, style)
-                    }
-                    CreateTab.Text -> {
-                        val text = prompt.trim()
-                        if (text.length < 2) throw IllegalStateException("再多写几个字吧（至少 2 个字）")
-                        api.createFromText(text, cleanName)
-                    }
+                val pipeline = Lux3dPipeline(Lux3dClient(key))
+                val result = pipeline.generate(input, plush) { stage, progress ->
+                    job = Job(stage, progress)
+                    status = stage
                 }
-
-                val done = api.awaitJob(created.id) { update ->
-                    job = update
-                    status = update.stage ?: "正在生成"
-                }
-                if (done.status == JobStatus.Failed) throw IllegalStateException(done.error ?: "生成失败")
-
-                status = "正在下载模型"
-                val glb = done.modelUrl?.let { api.downloadModel(it) }
 
                 val record = PetRecord(
-                    id = done.id,
+                    id = UUID.randomUUID().toString(),
                     name = cleanName,
-                    inputKind = done.inputKind,
-                    source = done.source ?: "lux3d",
-                    createdAtUtc = java.time.Instant.now().toString(),
+                    inputKind = result.inputKind,
+                    source = "lux3d",
+                    createdAtUtc = Instant.now().toString(),
                     bond = 0,
-                    triangles = done.triangles,
+                    triangles = result.stats.triangles,
                 )
-                store.add(record, glb)
+                store.add(record, result.glb)
                 refresh()
                 activePet = record
                 pickedPhoto = null
-                job = null
+                job = Job(
+                    stage = "手办完成",
+                    progress = 1f,
+                    triangles = result.stats.triangles,
+                    animations = result.stats.animations,
+                    bones = result.stats.bones,
+                    engine = "lux3d",
+                )
                 hatchSucceeded = true
+            } catch (error: CancellationException) {
+                status = "已取消"
+                job = null
+                screen = Screen.Create
+                throw error
             } catch (error: Exception) {
-                status = error.message ?: "生成失败"
+                status = error.message ?: "生成失败，请稍后重试"
+                job = null
                 screen = Screen.Create
             } finally {
                 busy = false
+                runningJob = null
             }
+        }.also { runningJob = it }
+    }
+
+    fun cancelHatch() {
+        runningJob?.cancel()
+        runningJob = null
+        busy = false
+        job = null
+        status = "已取消"
+        screen = Screen.Create
+    }
+
+    fun testApiKey(onResult: (Boolean, String) -> Unit) {
+        val key = settings.apiKey
+        if (key.isBlank()) {
+            onResult(false, "先填写 Lux3D API Key")
+            return
+        }
+        viewModelScope.launch {
+            val result = runCatching { Lux3dClient(key).checkKey() }
+            onResult(
+                result.isSuccess,
+                result.fold(
+                    onSuccess = { "Key 可用，可以开始制作手办了" },
+                    onFailure = { it.message ?: "Key 校验失败" },
+                ),
+            )
         }
     }
 
-    fun testConnection(onResult: (Boolean, String) -> Unit) {
-        viewModelScope.launch {
-            val api = ApiClient(settings.serverUrl, settings.secret)
-            val ok = api.health()
-            onResult(ok, if (ok) "连接成功，可以开始了" else "连不上服务器，检查地址或 adb reverse")
-        }
+    private companion object {
+        const val SAMPLE_ID = "built-in-sample"
     }
 }
