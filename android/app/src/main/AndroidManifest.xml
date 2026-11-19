@@ -46,6 +46,13 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".ui.AholoConsoleActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.Animo" />
+
         <service
             android:name=".GenerationService"
             android:exported="false"

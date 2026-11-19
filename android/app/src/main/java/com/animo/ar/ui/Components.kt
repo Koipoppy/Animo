@@ -299,6 +299,7 @@ fun PrimaryButton(
     text: String,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    accent: Boolean = false,
     onClick: () -> Unit,
 ) {
     val interaction = remember { MutableInteractionSource() }
@@ -310,9 +311,10 @@ fun PrimaryButton(
             .scale(scale)
             .liquidGlass(
                 shape = capsule(),
-                base = Color(0xFF141016),
+                base = if (accent) Palette.Blossom else Color(0xFF141016),
                 strength = if (enabled) 1.05f else 0.6f,
-                tint = Color.Transparent,
+                tint = if (accent) Palette.Blossom else Color.Transparent,
+                tintAlpha = if (accent) 0.55f else 0.18f,
             )
             .clickable(
                 enabled = enabled,
@@ -324,16 +326,24 @@ fun PrimaryButton(
     ) {
         Text(
             text = text,
-            color = if (enabled) Palette.Cream else Palette.Mist,
+            color = when {
+                !enabled -> Palette.Mist
+                accent -> Color(0xFF2B0716)
+                else -> Palette.Cream
+            },
             fontSize = 17.sp,
             fontWeight = FontWeight.SemiBold,
-            style = TextStyle(
-                shadow = Shadow(
-                    color = Color.Black.copy(alpha = 0.62f),
-                    offset = Offset(0f, 1.5f),
-                    blurRadius = 4f,
+            style = if (accent) {
+                TextStyle.Default
+            } else {
+                TextStyle(
+                    shadow = Shadow(
+                        color = Color.Black.copy(alpha = 0.62f),
+                        offset = Offset(0f, 1.5f),
+                        blurRadius = 4f,
+                    )
                 )
-            ),
+            },
         )
     }
 }

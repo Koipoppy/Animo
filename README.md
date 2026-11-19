@@ -8,7 +8,7 @@
 
 Animo 是一款原生 Android AR 手办应用。拍一张照片、从相册选一张图，或用一句话描述，Lux3D 会完成 3D 建模、绑骨和动作；手机用 ARCore 把手办放进真实空间，随时切换动作、调整光线、分享给朋友。
 
-`v0.9.58` · Aholo Global 3D AI Hackathon 2026 · Android 7.0+ / arm64 / ARCore
+`v0.9.59` · Aholo Global 3D AI Hackathon 2026 · Android 7.0+ / arm64 / ARCore
 
 <p align="center">
   <img src="docs/screens/home.png" width="230" alt="首页：相机就是背景" />
@@ -56,6 +56,12 @@ Animo 是一款原生 Android AR 手办应用。拍一张照片、从相册选�
 - 原始素材保留在本地，失败或中断后可以一键“重新生成”。
 - 生成任务在前台服务中保活，切到别的应用或锁屏也能继续跑。
 
+### 账号与 API Key
+
+- 设置页内登录 Aholo 官方账号，直接创建、管理 API Key。
+- 登录后显示可用额度，支持刷新与打开官方用量页。
+- 账号密码只在 Aholo 官方页面输入，App 不保存；Key 可一键从剪贴板填入。
+
 ### 手办管理
 
 - 建模成功即落库；未完成、失败的任务也会保留记录。
@@ -101,7 +107,7 @@ GLB 下载到手机 → 本地收藏 → ARCore + Filament 放进现实
 
 ### 安装
 
-安装 `Animo-0.9.58.apk`（arm64，随交付包提供；也可以按下方从源码构建）。首次打开允许相机权限；内置「萌萌」无需 Key。
+安装 `Animo-0.9.59.apk`（arm64，随交付包提供；也可以按下方从源码构建）。首次打开允许相机权限；内置「萌萌」无需 Key。
 
 创建自己的手办前，在 **设置 → Lux3D API Key** 填入自己的 Key（[labs.aholo3d.cn](https://labs.aholo3d.cn)）。
 
@@ -109,7 +115,7 @@ GLB 下载到手机 → 本地收藏 → ARCore + Filament 放进现实
 
 ```bash
 export ANDROID_HOME=/path/to/Android/Sdk
-tools/build-android.sh          # 产物：根目录 Animo-0.9.58.apk
+tools/build-android.sh          # 产物：根目录 Animo-0.9.59.apk
 tools/install-android.sh        # 构建 + 安装到已连接设备
 ```
 

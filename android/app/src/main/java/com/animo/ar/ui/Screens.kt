@@ -1,5 +1,6 @@
 package com.animo.ar.ui
 
+import android.content.ClipboardManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
@@ -74,6 +75,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -926,6 +928,7 @@ private fun BottomBar(
 
 @Composable
 fun SettingsScreen(state: AppState) {
+    val context = LocalContext.current
     var key by remember { mutableStateOf(state.settings.apiKey) }
     var message by remember { mutableStateOf("") }
 
@@ -962,12 +965,49 @@ fun SettingsScreen(state: AppState) {
             }
 
             Spacer(Modifier.height(10.dp))
+            AholoAccountCard()
+
+            Spacer(Modifier.height(14.dp))
             GlassCard(Modifier.fillMaxWidth()) {
                 Column {
                     Text("Lux3D API Key", color = Palette.Blossom, fontSize = 13.sp)
                     Spacer(Modifier.height(6.dp))
-                    Body("在 labs.aholo3d.cn 获取，只保存在这台手机上。", size = 11)
-                    Spacer(Modifier.height(10.dp))
+                    Body("登录上方 Aholo 账号即可创建；Key 只保存在这台手机上。", size = 11)
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                    ) {
+                        Text(
+                            "从剪贴板填入",
+                            color = Palette.Blossom,
+                            fontSize = 11.sp,
+                            modifier = Modifier
+                                .clickable {
+                                    val clip = context
+                                        .getSystemService(ClipboardManager::class.java)
+                                        ?.primaryClip
+                                    val raw = clip
+                                        ?.takeIf { it.itemCount > 0 }
+                                        ?.getItemAt(0)
+                                        ?.coerceToText(context)
+                                        ?.toString()
+                                        .orEmpty()
+                                    val candidate = raw
+                                        .lineSequence()
+                                        .firstOrNull { it.isNotBlank() }
+                                        ?.trim()
+                                        .orEmpty()
+                                    if (candidate.length !in 8..128) {
+                                        message = "剪贴板里没有可用的 API Key"
+                                    } else {
+                                        key = candidate
+                                        message = "已从剪贴板填入，点「保存并测试」"
+                                    }
+                                }
+                                .padding(vertical = 6.dp),
+                        )
+                    }
+                    Spacer(Modifier.height(4.dp))
                     CapsuleField(
                         value = key,
                         onValueChange = { key = it },
