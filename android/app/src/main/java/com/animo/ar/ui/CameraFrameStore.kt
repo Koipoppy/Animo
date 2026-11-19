@@ -31,14 +31,21 @@ internal object CameraFrameStore {
         private set
     var screenHeight by mutableIntStateOf(0)
         private set
-    /** False on Settings (camera is behind an opaque backdrop) and on Scan/Play. */
+    /** False on Settings (camera is behind an opaque backdrop) and on Play. */
     var visible by mutableStateOf(false)
         private set
+    /**
+     * Scan and Home/Manage can overlap during a navigation transition. Track owners instead of
+     * one boolean so a late dispose from the outgoing screen cannot hide the new screen's glass.
+     */
+    private val visibleOwners = mutableSetOf<String>()
     private var loggedFirstFrame = false
 
-    fun updateVisible(value: Boolean) {
-        if (visible != value) Log.i("AnimoCamera", "glass visible=$value")
-        visible = value
+    fun updateVisible(owner: String, value: Boolean) {
+        if (value) visibleOwners.add(owner) else visibleOwners.remove(owner)
+        val next = visibleOwners.isNotEmpty()
+        if (visible != next) Log.i("AnimoCamera", "glass visible=$next")
+        visible = next
     }
 
     fun updateScreen(left: Int, top: Int, width: Int, height: Int) {

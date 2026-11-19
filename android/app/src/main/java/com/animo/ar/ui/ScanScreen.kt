@@ -4,14 +4,27 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Matrix
+import android.graphics.Paint
+import android.graphics.RectF
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import android.util.Log
+import android.util.Size
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.animation.core.Animatable
@@ -44,8 +57,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Star
-import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -62,17 +73,20 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.res.vectorResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -81,7 +95,9 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.animo.ar.AppState
 import com.animo.ar.Palette
+import com.animo.ar.R
 import java.io.File
+import java.util.concurrent.Executors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -110,8 +126,43 @@ fun ScanScreen(state: AppState, onClose: () -> Unit) {
             .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
             .build()
     }
+    // A second, tiny stream feeds the liquid-glass lenses. Without it the scan screen's round
+    // buttons fall back to flat dark discs because they cannot sample the preview behind them.
+    val analysis = remember {
+        ImageAnalysis.Builder()
+            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            .setResolutionSelector(
+                ResolutionSelector.Builder()
+                    .setAspectRatioStrategy(
+                        AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY
+                    )
+                    .setResolutionStrategy(
+                        ResolutionStrategy(
+                            Size(640, 480),
+                            ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER,
+                        )
+                    )
+                    .build()
+            )
+            .build()
+    }
+    val analyzerExecutor = remember {
+        Executors.newSingleThreadExecutor { Thread(it, "animo-scan-glass") }
+    }
+    val mainHandler = remember { Handler(Looper.getMainLooper()) }
+    val flashlightIcon = ImageVector.vectorResource(R.drawable.ic_flashlight_on)
     val preview = remember {
-        Preview.Builder().build().apply { setSurfaceProvider(previewView.surfaceProvider) }
+        Preview.Builder()
+            // Match the 4:3 glass frame so the lens samples the same crop the user sees.
+            .setResolutionSelector(
+                ResolutionSelector.Builder()
+                    .setAspectRatioStrategy(
+                        AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY
+                    )
+                    .build()
+            )
+            .build()
+            .apply { setSurfaceProvider(previewView.surfaceProvider) }
     }
     var provider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
 
@@ -147,7 +198,21 @@ fun ScanScreen(state: AppState, onClose: () -> Unit) {
         provider = cameraProvider
         repeat(3) { attempt ->
             val bound = runCatching {
-                cameraProvider.unbind(preview, imageCapture)
+                cameraProvider.unbind(preview, imageCapture, analysis)
+                camera = cameraProvider.bindToLifecycle(
+                    lifecycleOwner,
+                    CameraSelector.DEFAULT_BACK_CAMERA,
+                    preview,
+                    imageCapture,
+                    analysis,
+                )
+            }.isSuccess
+            if (bound) return@LaunchedEffect
+
+            // Some devices cannot host Preview + ImageCapture + ImageAnalysis at once. Capture
+            // and preview matter more; the round buttons then use the translucent fallback.
+            val previewOnly = runCatching {
+                cameraProvider.unbind(preview, imageCapture, analysis)
                 camera = cameraProvider.bindToLifecycle(
                     lifecycleOwner,
                     CameraSelector.DEFAULT_BACK_CAMERA,
@@ -155,7 +220,10 @@ fun ScanScreen(state: AppState, onClose: () -> Unit) {
                     imageCapture,
                 )
             }.isSuccess
-            if (bound) return@LaunchedEffect
+            if (previewOnly) {
+                Log.w("AnimoCamera", "scan bound without glass analysis")
+                return@LaunchedEffect
+            }
             message = "相机正在切换，稍等…"
             kotlinx.coroutines.delay(600)
             if (attempt == 2) message = "相机启动失败，返回后重试"
@@ -166,11 +234,73 @@ fun ScanScreen(state: AppState, onClose: () -> Unit) {
         camera?.cameraControl?.enableTorch(torch)
     }
 
+    // The scan preview owns the camera, so it also owns the frames the glass lenses sample.
+    // The projection and 16 ms throttle mirror CameraBackdrop; two reusable rotation buffers
+    // keep the analyzer allocation-free after the first frame.
+    DisposableEffect(Unit) {
+        CameraFrameStore.updateVisible("scan", true)
+        onDispose {
+            CameraFrameStore.updateVisible("scan", false)
+            CameraFrameStore.clearFrame()
+        }
+    }
+
+    DisposableEffect(analysis) {
+        var lastFrameAt = 0L
+        var rotateA: Bitmap? = null
+        var rotateB: Bitmap? = null
+        var useA = true
+        val rotatePaint = Paint(Paint.FILTER_BITMAP_FLAG)
+        analysis.setAnalyzer(analyzerExecutor) { proxy ->
+            try {
+                val now = SystemClock.elapsedRealtime()
+                if (now - lastFrameAt >= 16L) {
+                    lastFrameAt = now
+                    val raw = proxy.toBitmap()
+                    val degrees = proxy.imageInfo.rotationDegrees
+                    val upright = if (degrees == 0) {
+                        raw
+                    } else {
+                        val swapped = degrees % 180 != 0
+                        val w = if (swapped) raw.height else raw.width
+                        val h = if (swapped) raw.width else raw.height
+                        val cached = if (useA) rotateA else rotateB
+                        val target = if (cached != null && cached.width == w && cached.height == h) {
+                            cached
+                        } else {
+                            Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888).also {
+                                if (useA) rotateA = it else rotateB = it
+                            }
+                        }
+                        useA = !useA
+                        val matrix = Matrix().apply { postRotate(degrees.toFloat()) }
+                        val bounds = RectF(0f, 0f, raw.width.toFloat(), raw.height.toFloat())
+                        matrix.mapRect(bounds)
+                        matrix.postTranslate(-bounds.left, -bounds.top)
+                        Canvas(target).drawBitmap(raw, matrix, rotatePaint)
+                        raw.recycle()
+                        target
+                    }
+                    mainHandler.post { CameraFrameStore.updateFrame(upright) }
+                }
+            } catch (t: Throwable) {
+                Log.w("AnimoCamera", "scan glass frame skipped", t)
+            } finally {
+                proxy.close()
+            }
+        }
+        onDispose {
+            analysis.clearAnalyzer()
+            analyzerExecutor.shutdownNow()
+            // Posted frames may still reference the rotation buffers; let GC handle them.
+        }
+    }
+
     DisposableEffect(preview) {
         onDispose {
             // Unbind only this screen's use cases: a blanket unbindAll would also tear down the
             // home/manage CameraX preview that is composed alongside the navigation transition.
-            runCatching { provider?.unbind(preview, imageCapture) }
+            runCatching { provider?.unbind(preview, imageCapture, analysis) }
             // A submitted task still needs the JPEGs: AppState moves them into task storage.
             if (!submitted) {
                 frames.forEach { runCatching { File(it).delete() } }
@@ -227,7 +357,20 @@ fun ScanScreen(state: AppState, onClose: () -> Unit) {
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         if (hasPermission) {
-            AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
+            AndroidView(
+                factory = { previewView },
+                modifier = Modifier
+                    .fillMaxSize()
+                    .onGloballyPositioned { coordinates ->
+                        val bounds = coordinates.boundsInWindow()
+                        CameraFrameStore.updateScreen(
+                            bounds.left.toInt(),
+                            bounds.top.toInt(),
+                            coordinates.size.width,
+                            coordinates.size.height,
+                        )
+                    },
+            )
             ScanGuideOverlay(Modifier.fillMaxSize())
 
             Box(
@@ -263,8 +406,8 @@ fun ScanScreen(state: AppState, onClose: () -> Unit) {
                 )
             }
             RoundButton(
-                Icons.Default.Star,
-                if (torch) "关闭补光" else "打开补光",
+                flashlightIcon,
+                if (torch) "关闭手电筒" else "打开手电筒",
                 46.dp,
                 onClick = { torch = !torch },
                 fill = if (torch) Palette.Blossom else Color(0xCC160B13),
@@ -301,7 +444,7 @@ fun ScanScreen(state: AppState, onClose: () -> Unit) {
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                "让角色正面站好、双手自然张开，拍出来更完整",
+                "让角色正面站好、双手自然张开\n每张照片尽量保持与角色距离大致相同",
                 color = Palette.Mist.copy(alpha = 0.8f),
                 fontSize = 10.sp,
                 textAlign = TextAlign.Center,
@@ -333,9 +476,7 @@ fun ScanScreen(state: AppState, onClose: () -> Unit) {
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 24.dp)
-                    .liquidGlass(capsule(), base = Color(0xFF120F14), strength = 0.92f)
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                    .padding(horizontal = 28.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -344,7 +485,7 @@ fun ScanScreen(state: AppState, onClose: () -> Unit) {
                         RoundButton(
                             Icons.Default.Delete,
                             "清空帧",
-                            46.dp,
+                            60.dp,
                             onClick = {
                                 frames.forEach { runCatching { File(it).delete() } }
                                 frames.clear()
@@ -352,21 +493,23 @@ fun ScanScreen(state: AppState, onClose: () -> Unit) {
                                 message = ""
                             },
                             fill = Color(0x99160B13),
+                            iconSize = 24.dp,
                         )
                     }
                 }
 
                 ShutterButton(
-                    enabled = hasPermission && camera != null && !capturing && !submitting &&
-                        frames.size < MAX_FRAMES,
+                    enabled = hasPermission && camera != null &&
+                        !capturing && !submitting && frames.size < MAX_FRAMES,
                     count = frameCount,
                     onClick = { captureFrame() },
                 )
 
                 Box(Modifier.width(64.dp), contentAlignment = Alignment.Center) {
-                    CapsuleAction(
+                    CircleAction(
                         text = if (submitting) "提交中" else "完成",
                         enabled = frames.isNotEmpty() && !submitting,
+                        submitting = submitting,
                         onClick = { submit() },
                     )
                 }
@@ -408,30 +551,40 @@ private fun ShutterButton(enabled: Boolean, count: Int, onClick: () -> Unit) {
 }
 
 @Composable
-private fun CapsuleAction(text: String, enabled: Boolean, onClick: () -> Unit) {
+private fun CircleAction(
+    text: String,
+    enabled: Boolean,
+    submitting: Boolean,
+    onClick: () -> Unit,
+) {
     val interaction = remember { MutableInteractionSource() }
-    val scale = rememberPressScale(interaction, pressedScale = 0.93f)
+    val scale = rememberPressScale(interaction, pressedScale = 0.92f)
+    val labelColor = when {
+        submitting -> Palette.Cream.copy(alpha = 0.8f)
+        enabled -> Palette.Cream
+        else -> Palette.Mist.copy(alpha = 0.5f)
+    }
     Box(
         Modifier
-            .width(62.dp)
-            .height(44.dp)
+            .size(64.dp)
             .scale(scale)
-            .shadow(10.dp, capsule(), clip = false)
-            .clip(capsule())
-            .background(
-                if (enabled) {
-                    Brush.verticalGradient(listOf(Color.White, Palette.Cream))
-                } else {
-                    Brush.verticalGradient(listOf(Color(0x33FFFFFF), Color(0x18FFFFFF)))
-                }
+            .liquidGlass(
+                shape = CircleShape,
+                base = Color(0xFF141016),
+                strength = if (enabled || submitting) 1f else 0.65f,
+                tint = Color(0xFF141016),
+                tintAlpha = if (enabled || submitting) 0.50f else 0.28f,
+                lens = true,
             )
-            .border(1.dp, Color.White.copy(alpha = 0.4f), capsule())
-            .clickable(enabled = enabled, indication = null, interactionSource = interaction) {
-                onClick()
-            },
+            .clickable(
+                enabled = enabled,
+                interactionSource = interaction,
+                indication = null,
+                onClick = onClick,
+            ),
         contentAlignment = Alignment.Center,
     ) {
-        Text(text, color = Color(0xFF2B0716), fontSize = 13.sp)
+        Text(text, color = labelColor, fontSize = 13.sp)
     }
 }
 

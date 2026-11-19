@@ -136,7 +136,7 @@ fun CameraBackdrop(
     var provider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
 
     LaunchedEffect(visible) {
-        CameraFrameStore.updateVisible(visible)
+        CameraFrameStore.updateVisible("backdrop", visible)
     }
 
     DisposableEffect(analysis) {
@@ -194,7 +194,7 @@ fun CameraBackdrop(
             // Do not recycle the rotation buffers here: a frame already posted to the main
             // thread may still reference one of them. Let GC take them.
             CameraFrameStore.clearFrame()
-            CameraFrameStore.updateVisible(false)
+            CameraFrameStore.updateVisible("backdrop", false)
         }
     }
 
