@@ -31,8 +31,8 @@ android {
         applicationId = "com.animo.ar"
         minSdk = 24
         targetSdk = 36
-        versionCode = 82
-        versionName = "0.9.60"
+        versionCode = 95
+        versionName = "0.9.73"
         // Phones are arm64. Pass -PincludeX86=true for a local x86_64 emulator build only;
         // the release/phone APK keeps the small arm64-only payload.
         val includeX86 = (project.findProperty("includeX86") as String?) == "true"

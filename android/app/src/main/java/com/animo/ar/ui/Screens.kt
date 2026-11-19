@@ -195,7 +195,7 @@ fun HomeScreen(
 
             Text(
                 when {
-                    !createOpen -> "对准桌面，点「制作」开始"
+                    !createOpen -> "对准桌面或地面，点「制作」开始"
                     textMode -> "输入描述，回车或点右侧按钮开始制作"
                     else -> "点粉色按钮拍照扫描 · 或选文字 / 相册"
                 },

@@ -151,6 +151,46 @@ private fun AnimoApp() {
         }
     }
 
+    fun shareImage(file: java.io.File) {
+        val uri = FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            file,
+        )
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "image/jpeg"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            clipData = android.content.ClipData.newRawUri("animo motion photo", uri)
+        }
+        val wechat = Intent(send).setPackage("com.tencent.mm")
+        if (runCatching { context.startActivity(wechat) }.isSuccess) return
+        runCatching { context.startActivity(Intent.createChooser(send, "分享动态照片")) }
+    }
+
+    fun saveMotionPhoto(file: java.io.File) {
+        if (Build.VERSION.SDK_INT < 29) return
+        val values = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, file.name)
+            put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+            // Camera roll is where WeChat looks for Motion Photo / Live Photo items.
+            put(MediaStore.Images.Media.RELATIVE_PATH, "DCIM/Camera")
+            put(MediaStore.Images.Media.IS_PENDING, 1)
+        }
+        val uri = context.contentResolver.insert(
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            values,
+        ) ?: return
+        runCatching {
+            context.contentResolver.openOutputStream(uri)?.use { out ->
+                file.inputStream().use { it.copyTo(out) }
+            }
+            values.clear()
+            values.put(MediaStore.Images.Media.IS_PENDING, 0)
+            context.contentResolver.update(uri, values, null, null)
+        }
+    }
+
     val recordLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -169,12 +209,15 @@ private fun AnimoApp() {
             putExtra(ShareRecordService.EXTRA_DATA, data)
             putExtra(ShareRecordService.EXTRA_OUTPUT, output.absolutePath)
         }
-        ContextCompat.startForegroundService(context, service)
         recordScope.launch {
+            // Let PlayScreen hide its HUD and the system bars first; the projection starts
+            // after that so the clip contains only the AR camera + figure.
+            kotlinx.coroutines.delay(450)
+            ContextCompat.startForegroundService(context, service)
             // 6 s capture + encoder finalisation; the service publishes the file when the
             // muxer has written the moov atom, so an early header-only file is never shared.
             var waited = 0
-            while (waited < 14_000 && ShareCenter.lastVideo != output) {
+            while (waited < 15_000 && ShareCenter.lastVideo != output) {
                 kotlinx.coroutines.delay(300)
                 waited += 300
             }
@@ -261,8 +304,14 @@ private fun AnimoApp() {
                         exportLauncher.launch("${pet.name}.glb")
                     },
                     onShareModel = { wechatOnly -> sharePet(pet, wechatOnly) },
-                    recording = ShareCenter.recording,
-                    onRecord = { startRecording() },
+                    onMotionPhoto = { photo ->
+                        recordScope.launch {
+                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                saveMotionPhoto(photo)
+                            }
+                            Toast.makeText(context, "动态照片已保存到相册", Toast.LENGTH_SHORT).show()
+                        }
+                    },
                 )
             }
         }

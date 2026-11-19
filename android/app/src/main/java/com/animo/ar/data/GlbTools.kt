@@ -99,8 +99,14 @@ private fun rewriteJson(bytes: ByteArray, transform: (JSONObject) -> Boolean): B
     }.getOrNull() ?: return bytes
     if (!transform(gltf)) return bytes
 
-    val json = gltf.toString().toByteArray(Charsets.UTF_8)
-    val padding = (4 - (json.size % 4)) % 4
+    // org.json escapes "/" as "\/"; Filament looks up the texture provider by the
+    // literal MIME string, so "image\/png" misses the PNG provider and every texture
+    // renders black. "\/" is a valid JSON escape for "/", so unescape it here.
+    val json = gltf.toString().replace("\\/", "/").toByteArray(Charsets.UTF_8)
+    // Keep the BIN chunk on an 8-byte boundary as well; some Filament/gltfio
+    // builds are sensitive to attribute alignment even though the GLB spec only
+    // requires 4 bytes.
+    val padding = (4 - (json.size % 8) + 8) % 8
     val padded = if (padding == 0) json else json + ByteArray(padding) { 0x20 }
 
     val out = ByteArrayOutputStream()
@@ -162,8 +168,8 @@ fun sanitizeGlb(bytes: ByteArray): ByteArray = rewriteJson(bytes) { gltf ->
     if (materials != null) {
         for (index in 0 until materials.length()) {
             val material = materials.optJSONObject(index) ?: continue
-            val extensions = material.optJSONObject("extensions") ?: continue
-            if (extensions.has("KHR_materials_specular")) {
+            val extensions = material.optJSONObject("extensions")
+            if (extensions != null && extensions.has("KHR_materials_specular")) {
                 extensions.remove("KHR_materials_specular")
                 changed = true
                 if (extensions.length() == 0) material.remove("extensions")
@@ -185,6 +191,11 @@ fun sanitizeGlb(bytes: ByteArray): ByteArray = rewriteJson(bytes) { gltf ->
             }
             pbr.put("metallicFactor", 0.0)
             pbr.put("roughnessFactor", 0.85)
+            // Lux3D GLBs often have inverted triangle winding. With back-face culling the
+            // outer shell disappears and Filament leaves a black silhouette in AR, while the
+            // WebView preview still looks correct. Rendering both sides fixes it without
+            // rewriting hundreds of thousands of indices.
+            material.put("doubleSided", true)
             changed = true
         }
     }

@@ -1,8 +1,23 @@
 package com.animo.ar.ui
 
+import android.app.Activity
+import android.graphics.Bitmap
+import android.graphics.Matrix
+import android.media.Image
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.MotionEvent
+import android.view.TextureView
+import android.view.View
+import android.view.ViewGroup
+import android.widget.Toast
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.rememberScrollState
@@ -38,12 +53,14 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -53,11 +70,18 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.PathData
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import java.util.concurrent.Executors
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.atan2
@@ -67,16 +91,19 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 import kotlin.coroutines.resume
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import com.google.ar.core.Anchor
 import com.google.ar.core.Config
 import com.google.ar.core.Frame
 import com.google.ar.core.InstantPlacementPoint
 import com.google.ar.core.Plane
+import com.animo.ar.MotionPhotoRecorder
 import com.animo.ar.Palette
 import com.animo.ar.data.Lux3dPipeline
 import com.animo.ar.data.PetRecord
 import com.animo.ar.data.sanitizeGlb
+import io.github.sceneview.SurfaceType
 import io.github.sceneview.ar.ARSceneView
 import io.github.sceneview.ar.node.AnchorNode
 import io.github.sceneview.loaders.ModelLoader
@@ -203,12 +230,58 @@ fun PlayScreen(
     clipError: String? = null,
     onExportModel: () -> Unit = {},
     onShareModel: (Boolean) -> Unit = {},
-    recording: Boolean = false,
-    onRecord: () -> Unit = {},
+    onMotionPhoto: (File) -> Unit = {},
 ) {
+    // Android back should leave the AR page, not the whole app.
+    BackHandler { onExit() }
+    val context = LocalContext.current
+    val rootView = androidx.compose.ui.platform.LocalView.current
+    val activity = context as? Activity
+    val scope = rememberCoroutineScope()
+    var capturing by remember { mutableStateOf(false) }
+    var arTexture by remember { mutableStateOf<TextureView?>(null) }
+    LaunchedEffect(Unit) {
+        repeat(20) {
+            val found = findTextureView(rootView)
+            if (found != null) {
+                arTexture = found
+                return@LaunchedEffect
+            }
+            delay(250)
+        }
+    }
+    LaunchedEffect(capturing) {
+        val window = activity?.window ?: return@LaunchedEffect
+        val controller = WindowCompat.getInsetsController(window, rootView)
+        if (capturing) {
+            controller.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+        } else {
+            controller.show(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+
     val engine = rememberEngine()
     val modelLoader = rememberModelLoader(engine)
     val materialLoader = rememberMaterialLoader(engine)
+    // ARCore owns the camera on this page, so feed its frames to the same glass store the
+    // rest of the app uses. Without this the two top round buttons fall back to flat discs.
+    val glassExecutor = remember { Executors.newSingleThreadExecutor { Thread(it, "animo-play-glass") } }
+    val glassHandler = remember { Handler(Looper.getMainLooper()) }
+    val glassClock = remember { longArrayOf(0L) }
+    DisposableEffect(Unit) {
+        CameraFrameStore.updateVisible("play", true)
+        onDispose {
+            CameraFrameStore.updateVisible("play", false)
+            CameraFrameStore.clearFrame()
+            glassExecutor.shutdownNow()
+            activity?.window?.let { window ->
+                WindowCompat.getInsetsController(window, rootView)
+                    .show(WindowInsetsCompat.Type.systemBars())
+            }
+        }
+    }
     // ARCore's HDR environment alone leaves the pets flat in dim rooms; a soft key light gives
     // them shape without blowing out the camera feed.
     val keyLight = remember(engine) {
@@ -281,18 +354,61 @@ fun PlayScreen(
         mutableStateOf(
             when {
                 modelMissing -> "模型没加载出来，回手办管理重新制作一次"
-                animationCount > 0 -> "正在找桌面…"
-                else -> "这个模型还没有动作，正在找桌面…"
+                animationCount > 0 -> "正在找平面…"
+                else -> "这个模型还没有动作，正在找平面…"
             }
         )
     }
     var playingClip by remember { mutableStateOf<String?>(null) }
+    var bubbleKey by remember { mutableIntStateOf(0) }
+    var bubbleVisible by remember { mutableStateOf(true) }
+
+    fun showBubble(text: String) {
+        bubble = text
+        bubbleKey += 1
+    }
+
+    LaunchedEffect(bubbleKey) {
+        if (bubble.isBlank()) {
+            bubbleVisible = false
+            return@LaunchedEffect
+        }
+        bubbleVisible = true
+        delay(3_000)
+        bubbleVisible = false
+    }
+
+    fun captureMotionPhoto() {
+        if (capturing) return
+        val texture = arTexture
+        if (texture == null) {
+            showBubble("画面还没准备好，请稍等一下")
+            return
+        }
+        capturing = true
+        showBubble("正在生成动态照片…")
+        Toast.makeText(context, "正在生成动态照片，请稍候…", Toast.LENGTH_LONG).show()
+        scope.launch {
+            delay(350)
+            val dir = File(context.cacheDir, "share").apply { mkdirs() }
+            val result = runCatching {
+                MotionPhotoRecorder().capture(texture, dir)
+            }.getOrNull()
+            capturing = false
+            if (result != null) {
+                showBubble("动态照片已生成")
+                onMotionPhoto(result.motionPhoto)
+            } else {
+                showBubble("动态照片生成失败，请重试")
+            }
+        }
+    }
 
     fun selectClip(clip: ApiClip) {
         clipMenu = false
         val actor = stage.playerActor
         if (actor == null) {
-            bubble = "先把手办放到桌面上，再切换动作"
+            showBubble("先把手办放到平面上，再切换动作")
             return
         }
         stage.idleUntilNanos = 0L
@@ -306,17 +422,28 @@ fun PlayScreen(
             stage.oneShotUntilNanos = System.nanoTime() + (duration * 1_000_000_000L).toLong()
         }
         playingClip = clip.id
-        bubble = "动作：${clip.label}"
+        showBubble("动作：${clip.label}")
     }
 
     Box(Modifier.fillMaxSize()) {
         ARSceneView(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .onGloballyPositioned { coordinates ->
+                    val bounds = coordinates.boundsInWindow()
+                    CameraFrameStore.updateScreen(
+                        bounds.left.toInt(),
+                        bounds.top.toInt(),
+                        coordinates.size.width,
+                        coordinates.size.height,
+                    )
+                },
             engine = engine,
+            surfaceType = SurfaceType.TextureSurface,
             modelLoader = modelLoader,
             materialLoader = materialLoader,
             mainLightNode = keyLight,
-            planeRenderer = true,
+            planeRenderer = !capturing,
             sessionConfiguration = { sessionConfig, config ->
                 config.planeFindingMode = Config.PlaneFindingMode.HORIZONTAL
                 config.instantPlacementMode = Config.InstantPlacementMode.LOCAL_Y_UP
@@ -367,6 +494,22 @@ fun PlayScreen(
                     dy / length,
                     dz / length,
                 )
+
+                // ~6 fps is plenty for a 46dp lens and keeps ARCore's camera pipeline free.
+                val glassNow = SystemClock.elapsedRealtime()
+                if (glassNow - glassClock[0] >= 160L) {
+                    glassClock[0] = glassNow
+                    val image = runCatching { updated.acquireCameraImage() }.getOrNull()
+                    if (image != null) {
+                        glassExecutor.execute {
+                            val bitmap = runCatching { cameraImageToGlassBitmap(image) }.getOrNull()
+                            image.close()
+                            if (bitmap != null) {
+                                glassHandler.post { CameraFrameStore.updateFrame(bitmap) }
+                            }
+                        }
+                    }
+                }
                 // Only planes that are tracking, horizontal and large enough to stand on
                 // count — PAUSED or sliver-sized planes would make the count lie.
                 val usable = usablePlanes(active)
@@ -403,7 +546,7 @@ fun PlayScreen(
                             anchors.clear()
                             anchors.add(anchor)
                             placedOnPlane = true
-                            bubble = "已贴上平面"
+                            showBubble("已贴上平面")
                         }
                     }
                 }
@@ -421,7 +564,7 @@ fun PlayScreen(
                         if (player != null && rival != null) {
                             moveBattleToPlane(plane, anchorPose, updated.camera.pose, player, rival)
                             battleOnPlane = true
-                            bubble = "已转移到桌面上对战"
+                            showBubble("已转移到平面上对战")
                         }
                     }
                 }
@@ -545,11 +688,11 @@ fun PlayScreen(
                     placed = true
                     if (planeHit != null) {
                         placedOnPlane = true
-                        bubble = "我在这里"
+                        showBubble("我在这里")
                     } else {
                         placedOnPlane = false
                         fallbackFrames = 0
-                        bubble = "先放在默认平面，找到桌面会自动贴上"
+                        showBubble("先放在默认平面；对着平面左右摇动手机，找到后会自动贴上")
                     }
                     true
                 }
@@ -620,7 +763,7 @@ fun PlayScreen(
             }
         }
 
-        if (!recording) {
+        if (!capturing) {
         Column(
             Modifier
                 .fillMaxWidth()
@@ -636,29 +779,15 @@ fun PlayScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(pet.name, color = Palette.Cream, fontSize = 17.sp, fontWeight = FontWeight.Medium)
-                Spacer(Modifier.width(12.dp))
-                repeat(5) { index ->
-                    Box(
-                        Modifier
-                            .padding(end = 3.dp)
-                            .size(6.dp)
-                            .clip(capsule())
-                            .background(
-                                if (index < pet.bond.coerceIn(0, 5)) Palette.Coral else Color(0x33FFFFFF)
-                            )
-                    )
-                }
             }
 
             Spacer(Modifier.height(12.dp))
-            Bubble(bubble)
-            if (animationCount > 0) {
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    "动作 $animationCount 段 · ${playingClip ?: "准备中"}",
-                    color = Palette.Mist.copy(alpha = 0.85f),
-                    fontSize = 10.sp
-                )
+            AnimatedVisibility(
+                visible = bubbleVisible && bubble.isNotBlank(),
+                enter = fadeIn(),
+                exit = fadeOut(),
+            ) {
+                Bubble(bubble)
             }
         }
 
@@ -710,9 +839,9 @@ fun PlayScreen(
                         onShareModel(false)
                     }
                     Spacer(Modifier.height(8.dp))
-                    GhostButton("录制 6 秒动态照片", Modifier.fillMaxWidth()) {
+                    GhostButton("生成动态照片", Modifier.fillMaxWidth()) {
                         shareMenu = false
-                        onRecord()
+                        captureMotionPhoto()
                     }
                     Spacer(Modifier.height(10.dp))
                     GhostButton("关闭", Modifier.fillMaxWidth()) { shareMenu = false }
@@ -840,29 +969,29 @@ fun PlayScreen(
             if (!placed) {
                 val hint = when {
                     modelMissing -> "模型没加载出来，回手办管理重新制作一次"
-                    planeCount > 0 -> "已找到桌面（${planeCount} 处），点一下把它放下"
-                    else -> "点一下先放到默认平面；对准桌面缓慢平移，会自动贴上真实桌面"
+                    planeCount > 0 -> "已找到平面（${planeCount} 处），点一下把它放下"
+                    else -> "点一下先放到默认平面\n对着平面左右摇动手机，会自动贴上真实平面"
                 }
                 Text(
                     hint,
                     color = if (planeCount > 0) Palette.Blossom else Palette.Cream,
                     fontSize = 13.sp,
                     textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(bottom = 12.dp)
+                    modifier = Modifier.padding(start = 24.dp, end = 24.dp, bottom = 12.dp)
                 )
             } else {
                 val hint = when {
-                    adjustMode -> "双指缩放 / 绕桌面旋转 · 点空处挪位置"
-                    !placedOnPlane && planeCount > 0 -> "已找到桌面（${planeCount} 处）· 马上自动贴上平面"
-                    !placedOnPlane -> "正在扫描桌面… 找到后会自动贴上平面"
-                    else -> "点空处可以挪位置"
+                    adjustMode -> "拖动手指移动 · 双指缩放 / 绕平面旋转 · 点空处换位置"
+                    !placedOnPlane && planeCount > 0 -> "已找到平面（${planeCount} 处）· 马上自动贴上平面"
+                    !placedOnPlane -> "正在扫描平面…\n对着平面左右摇动手机，找到后会自动贴上"
+                    else -> "点「挪一挪」可移动、缩放和旋转手办"
                 }
                 Text(
                     hint,
                     color = Palette.Mist,
                     fontSize = 12.sp,
                     textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(bottom = 12.dp)
+                    modifier = Modifier.padding(start = 24.dp, end = 24.dp, bottom = 12.dp)
                 )
             }
             Row(
@@ -875,7 +1004,7 @@ fun PlayScreen(
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 ActionItem(RecordDot, "动态照片", modifier = Modifier.weight(1f)) {
-                    onRecord()
+                    captureMotionPhoto()
                 }
                 ActionItem(
                     Icons.Default.PlayArrow,
@@ -889,11 +1018,13 @@ fun PlayScreen(
                     modifier = Modifier.weight(1f),
                 ) {
                     adjustMode = !adjustMode
-                    bubble = if (adjustMode) {
-                        "双指缩放 / 旋转 · 点空处挪位置"
-                    } else {
-                        "点空处可以挪位置"
-                    }
+                    showBubble(
+                        if (adjustMode) {
+                            "拖动手指移动 · 双指缩放 / 旋转 · 点空处换位置"
+                        } else {
+                            "已退出挪动模式"
+                        }
+                    )
                 }
                 ActionItem(
                     Icons.Default.Star,
@@ -903,7 +1034,7 @@ fun PlayScreen(
                 ) {
                     flashlight = !flashlight
                     onToggleCameraLight(flashlight)
-                    bubble = if (flashlight) "虚拟手电筒已开启" else "虚拟手电筒已关闭"
+                    showBubble(if (flashlight) "虚拟手电筒已开启" else "虚拟手电筒已关闭")
                 }
             }
         }
@@ -1557,4 +1688,67 @@ private fun loadModel(loader: ModelLoader, rawBytes: ByteArray): LoadedPet? {
         deathClip = death,
         animationNames = names,
     )
+}
+
+
+/** ARCore YUV_420_888 frame -> small upright bitmap for the liquid-glass lenses. */
+private fun cameraImageToGlassBitmap(image: Image): Bitmap? {
+    if (image.format != android.graphics.ImageFormat.YUV_420_888) return null
+    val width = image.width
+    val height = image.height
+    if (width <= 1 || height <= 1) return null
+    val planes = image.planes
+    if (planes.size < 3) return null
+    val yPlane = planes[0]
+    val uPlane = planes[1]
+    val vPlane = planes[2]
+    val yBuf = yPlane.buffer
+    val uBuf = uPlane.buffer
+    val vBuf = vPlane.buffer
+    val yBase = yBuf.position()
+    val uBase = uBuf.position()
+    val vBase = vBuf.position()
+    val step = 2
+    val outW = (width + step - 1) / step
+    val outH = (height + step - 1) / step
+    val pixels = IntArray(outW * outH)
+    for (oy in 0 until outH) {
+        val sy = oy * step
+        val yRow = sy * yPlane.rowStride
+        val uvRow = (sy / 2) * uPlane.rowStride
+        for (ox in 0 until outW) {
+            val sx = ox * step
+            val yIndex = yBase + yRow + sx * yPlane.pixelStride
+            if (yIndex >= yBuf.limit()) continue
+            val yValue = yBuf.get(yIndex).toInt() and 0xFF
+            val uvIndex = uvRow + (sx / 2) * uPlane.pixelStride
+            val uValue = if (uBase + uvIndex < uBuf.limit()) {
+                (uBuf.get(uBase + uvIndex).toInt() and 0xFF) - 128
+            } else 0
+            val vValue = if (vBase + uvIndex < vBuf.limit()) {
+                (vBuf.get(vBase + uvIndex).toInt() and 0xFF) - 128
+            } else 0
+            val r = (yValue + 1.402f * vValue).toInt().coerceIn(0, 255)
+            val g = (yValue - 0.344136f * uValue - 0.714136f * vValue).toInt().coerceIn(0, 255)
+            val b = (yValue + 1.772f * uValue).toInt().coerceIn(0, 255)
+            pixels[oy * outW + ox] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+        }
+    }
+    val raw = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
+    raw.setPixels(pixels, 0, outW, 0, 0, outW, outH)
+    // The back camera image is landscape in sensor coordinates; the app is portrait.
+    val rotated = Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, Matrix().apply { postRotate(90f) }, true)
+    if (rotated !== raw) raw.recycle()
+    return rotated
+}
+
+
+private fun findTextureView(view: View): TextureView? {
+    if (view is TextureView) return view
+    if (view is ViewGroup) {
+        for (index in 0 until view.childCount) {
+            findTextureView(view.getChildAt(index))?.let { return it }
+        }
+    }
+    return null
 }

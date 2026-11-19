@@ -8,7 +8,7 @@
 
 Animo 是一款原生 Android AR 手办应用。拍一张照片、从相册选一张图，或用一句话描述，Lux3D 会完成 3D 建模、绑骨和动作；手机用 ARCore 把手办放进真实空间，随时切换动作、调整光线、分享给朋友。
 
-`v0.9.60` · Aholo Global 3D AI Hackathon 2026 · Android 7.0+ / arm64 / ARCore
+`v0.9.73` · Aholo Global 3D AI Hackathon 2026 · Android 7.0+ / arm64 / ARCore
 
 <p align="center">
   <img src="docs/screens/home.png" width="230" alt="首页：相机就是背景" />
@@ -29,7 +29,7 @@ Animo 是一款原生 Android AR 手办应用。拍一张照片、从相册选�
 - **动作可以慢慢加。** 支持 10 种动作；不用一次等完，想要跳舞、挥剑、坐下时再单独生成。
 - **每个手办都有 3D 预览。** 管理页直接拖拽旋转、缩放、自动播放待机，点“放进现实”进入 AR。
 - **放进现实，而不是停在屏幕里。** ARCore 平面放置、贴合桌面、双指缩放、绕平面旋转，默认面向你。
-- **分享得出去。** 导出模型文件（GLB）、快捷分享给微信好友、录制 6 秒动态照片发朋友圈。
+- **分享得出去。** 导出模型文件（GLB）、快捷分享给微信好友、生成 3 秒动态照片发朋友圈。
 
 ## 三步做出你的手办
 
@@ -38,7 +38,7 @@ Animo 是一款原生 Android AR 手办应用。拍一张照片、从相册选�
 2. **等它变成手办**<br>
    Lux3D 依次完成手办化改写、参考视角补全、图生 3D、人形绑骨和动作。建模成功后会立即进入手办管理页，不需要等所有动作跑完。
 3. **放进现实**<br>
-   在管理页点“放进现实”，对着桌面找平面，点一下放置。用“挪一挪”移动，双指缩放/旋转，切换动作，打开补光，拍一段 6 秒动态照片。
+   在管理页点“放进现实”，对着桌面找平面，点一下放置。用“挪一挪”移动，双指缩放/旋转，切换动作，打开补光，生成一段 3 秒动态照片。
 
 > 第一次打开会自带「萌萌」示例：不填 Key 也能直接进入 AR、切换待机和走路。
 
@@ -81,7 +81,7 @@ Animo 是一款原生 Android AR 手办应用。拍一张照片、从相册选�
 
 - 导出 GLB 模型文件。
 - 快捷分享给微信好友；未安装微信时走系统分享。
-- 录制 6 秒动态照片（MP4），Android 10+ 可直接保存到相册，并分享到微信或其他应用。
+- 生成 3 秒动态照片：直接抓取 AR 画面，不弹录屏授权；Motion Photo JPEG 单文件保存到相机胶卷，微信里打开“实况”后发朋友圈。
 
 ## 它如何工作
 
@@ -107,7 +107,7 @@ GLB 下载到手机 → 本地收藏 → ARCore + Filament 放进现实
 
 ### 安装
 
-安装 `Animo-0.9.60.apk`（arm64，随交付包提供；也可以按下方从源码构建）。首次打开允许相机权限；内置「萌萌」无需 Key。
+安装 `Animo-0.9.73.apk`（arm64，随交付包提供；也可以按下方从源码构建）。首次打开允许相机权限；内置「萌萌」无需 Key。
 
 创建自己的手办前，在 **设置 → Lux3D API Key** 填入自己的 Key（[labs.aholo3d.cn](https://labs.aholo3d.cn)）。
 
@@ -115,7 +115,7 @@ GLB 下载到手机 → 本地收藏 → ARCore + Filament 放进现实
 
 ```bash
 export ANDROID_HOME=/path/to/Android/Sdk
-tools/build-android.sh          # 产物：根目录 Animo-0.9.60.apk
+tools/build-android.sh          # 产物：根目录 Animo-0.9.73.apk
 tools/install-android.sh        # 构建 + 安装到已连接设备
 ```
 
@@ -141,7 +141,7 @@ android/                     原生 Android 客户端（Kotlin + Jetpack Compose
     ui/                      相机首页、扫描、管理、AR 播放、液态玻璃
     data/                    Lux3D 客户端、生成流水线、GLB 处理、本地存储
     GenerationService.kt     生成任务前台保活
-    ShareRecordService.kt    6 秒动态照片录制
+    MotionPhotoRecorder.kt   直接抓 AR 画面生成动态照片
   app/src/main/assets/models/sample.glb   内置「萌萌」
 tools/                       构建、安装、签名脚本
 docs/                        README 横幅与界面图
