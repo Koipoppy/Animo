@@ -43,3 +43,6 @@ video/
 blender/
 .tmp-*/
 .tmp-emulator.log
+
+# Internal hackathon strategy notes (not part of the public submission)
+Aholo黑客松*.md
