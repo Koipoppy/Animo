@@ -56,6 +56,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -75,7 +76,9 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -764,6 +767,17 @@ private fun ManagePetRow(
 ) {
     val interaction = remember { MutableInteractionSource() }
     val scale = rememberPressScale(interaction, pressedScale = 0.985f)
+    var rowHeightPx by remember { mutableIntStateOf(0) }
+    val density = LocalDensity.current
+    // The pencil is 40dp; putting its center on the capsule's right-arc center makes the
+    // right inset exactly (rowHeight - 40) / 2. Measuring avoids a magic padding that
+    // drifts with font scale or a two-line subtitle.
+    val endPadding = with(density) {
+        val fallback = 8.dp.toPx()
+        if (rowHeightPx <= 0) fallback.toDp() else {
+            ((rowHeightPx - 40.dp.toPx()) / 2f).coerceAtLeast(fallback).toDp()
+        }
+    }
     Row(
         Modifier
             .fillMaxWidth()
@@ -778,7 +792,8 @@ private fun ManagePetRow(
                 tintAlpha = 0.10f,
             )
             .clickable(interactionSource = interaction, indication = null, onClick = onClick)
-            .padding(start = 14.dp, end = 8.dp, top = 11.dp, bottom = 11.dp),
+            .onSizeChanged { rowHeightPx = it.height }
+            .padding(start = 14.dp, end = endPadding, top = 11.dp, bottom = 11.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         PetAvatar(pet.name, 48.dp)
